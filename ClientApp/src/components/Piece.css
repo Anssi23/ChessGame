@@ -1,0 +1,6 @@
+.piece {
+    position: absolute;
+    font-size: 48px;
+    pointer-events: none;
+    user-select: none;
+}

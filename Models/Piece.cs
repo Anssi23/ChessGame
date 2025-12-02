@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace ChessGame.Models
 {
     public enum PieceType { King, Queen, Rook, Bishop, Knight, Pawn }
@@ -5,8 +7,11 @@ namespace ChessGame.Models
 
     public class Piece
     {
+        [Key]
+        public int Id { get; set; }
+
         public PieceType Type { get; set; }
         public PieceColor Color { get; set; }
-        public string Position { get; set; } // esim. "e4"
+        public required string Position { get; set; } = string.Empty;// esim. "e4"
     }
 }

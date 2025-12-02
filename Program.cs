@@ -1,8 +1,15 @@
+using ChessGame.Data;
+using ChessGame.Services;
+using Microsoft.EntityFrameworkCore;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 
 builder.Services.AddControllersWithViews();
+
+builder.Services.AddDbContext<ChessContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));//lisätty 13.11.2025 AAi
 
 builder.Services.AddSingleton<GameService>();//lisätty 13.11.2025 AAi
 

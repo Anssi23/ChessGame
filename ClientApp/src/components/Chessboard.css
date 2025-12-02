@@ -1,0 +1,24 @@
+.chess-container {
+    position: relative;
+    width: 512px; /* 8 x 64px */
+    height: 512px;
+}
+
+.board {
+    display: grid;
+    grid-template-columns: repeat(8, 64px);
+    grid-template-rows: repeat(8, 64px);
+}
+
+.square {
+    width: 64px;
+    height: 64px;
+}
+
+.light {
+    background-color: #f0d9b5;
+}
+
+.dark {
+    background-color: #b58863;
+}
