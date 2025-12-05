@@ -8,9 +8,11 @@ import Piece from "./Piece";
  *  - board: 8x8 array (board[row][col]) where each square is either null or { type: "P"/"K"/..., color: "w"/"b" }
  *  - setBoard: function to update the board state (provided by App.jsx)
  */
-export default function ChessBoard({ board, setBoard }) {
-    const [selected, setSelected] = useState(null);        // { r, c } or null
-    const [validMoves, setValidMoves] = useState([]);      // array of { r, c }
+export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentPlayer, message, setMessage }) {
+    const [selectedSquare, setSelectedSquare] = useState(null);        // { r, c } or null
+    const [validMoves, setValidMoves] = useState([]);      // array of { r, c }    
+    const [checkStatus, setCheckStatus] = useState({ w: false, b: false });
+    const [gameOver, setGameOver] = useState(false);
 
     // Safety: ensure board is present and 8x8
     if (!board || !Array.isArray(board) || board.length !== 8) {
@@ -27,6 +29,369 @@ export default function ChessBoard({ board, setBoard }) {
     const isValidSquare = (r, c) =>
         validMoves.some((m) => m.r === r && m.c === c);
 
+    const wouldKingBeInCheckAfterMove = (board, from, to) => {
+        // Kopioi lauta
+        const testBoard = board.map(row => row.slice());
+
+        // Tee siirto testilaudalle
+        testBoard[to.row][to.col] = testBoard[from.row][from.col];
+        testBoard[from.row][from.col] = null;
+                
+        // Kenen siirto?
+        const movedPiece = board[from.row][from.col];
+        if (!movedPiece) return false;
+
+        return isKingInCheck(testBoard, movedPiece.color);
+    };
+
+    // Click handling:
+    // - If no selected piece: select piece and compute valid moves
+    // - If selected and click is in validMoves: perform move
+    // - If selected and click on another own piece: change selection
+    // - Else: clear selection
+    function handleSquareClick(row, col) {
+        const clickedPiece = board[row][col];
+
+        // Jos ei ole valittua ruutua, saa klikata vain oman v‰rin nappulaa
+        if (!selectedSquare) {
+            if (clickedPiece && clickedPiece.color === currentPlayer) {
+                const moves = getValidMoves(board, row, col);
+                setSelectedSquare({ row, col });
+                setValidMoves(moves);
+            }
+            return;
+        }
+
+        // No selection yet
+        if (!selectedSquare) {
+            if (!clickedPiece) return; // clicking empty square does nothing
+            const moves = getValidMoves(board, row, col);
+            setSelectedSquare({ row, col });
+            setValidMoves(moves);
+            return;
+        }
+
+        // Click same square -> deselect
+        if (selectedSquare.row === row && selectedSquare.col === col) {
+            setSelectedSquare(null);
+            setValidMoves([]);
+            return;
+        }
+
+
+        if (clickedPiece && clickedPiece.color === board[selectedSquare.row][selectedSquare.col].color) {
+            console.log(`Changing selection to (${row},${col})`);
+            const moves = getValidMoves(board, row, col);
+            setSelectedSquare({ row, col });
+            setValidMoves(moves);
+            return;
+        }
+
+
+        // If clicked square is a valid move -> perform move
+        if (isValidSquare(row, col)) {
+            console.log(`Moving piece from (${selectedSquare.row},${selectedSquare.col}) to (${row},${col})`);
+
+            // 1. Estet‰‰n siirrot jotka j‰tt‰v‰t kuninkaan uhattuun asemaan
+            const moveLeavesKingInCheck = wouldKingBeInCheckAfterMove(
+                board,
+                selectedSquare,
+                { row, col }
+            );
+
+
+            if (moveLeavesKingInCheck) {
+                setMessage("Illegal move - king would be in check!");
+                setTimeout(() => setMessage(""), 3000); // banneri katoaa 3s kuluttua
+                setSelectedSquare(null);
+                setValidMoves([]);
+                return; // Siirto estetty!
+            }
+
+            // 2. Suorita siirto
+            const newBoard = board.map((rowArr) => rowArr.slice()); // shallow copy rows
+            newBoard[row][col] = newBoard[selectedSquare.row][selectedSquare.col];
+            newBoard[selectedSquare.row][selectedSquare.col] = null;
+
+
+            setBoard(newBoard);
+            setSelectedSquare(null);
+            setValidMoves([]);
+
+            // P‰ivit‰ check-tilanne siirron j‰lkeen
+            //TOIMII
+            setCheckStatus({
+                w: isKingInCheck(newBoard, "w"),
+                b: isKingInCheck(newBoard, "b")
+            });
+
+            // Vaihda vuoro
+            setCurrentPlayer(prev => (prev === "w" ? "b" : "w"));
+
+            return;
+        }
+
+        // Otherwise clicked an invalid target -> just clear selection
+        setSelectedSquare(null);
+        setValidMoves([]);
+    }
+       
+
+    //alkuper‰inen isKingInCheck
+    const isKingInCheck = (board, color) => {
+        let kingPos = null;
+        // Find king position
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const piece = board[r][c];
+                if (piece && piece.type === "K" && piece.color === color) {
+                    kingPos = { r, c };
+                    break;
+                }
+            }
+            if (kingPos) break;
+        }
+        if (!kingPos) return false; // King not found (should not happen)
+
+        // Check if any enemy piece can move to king's position
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const piece = board[r][c];
+                if (piece && piece.color !== color) {
+                    const moves = getValidMoves(board, r, c);
+                    if (moves.some((m) => m.r === kingPos.r && m.c === kingPos.c)) {
+                        setMessage("CHECK!");
+                        setTimeout(() => setMessage(""), 3000);
+                        return true; // King is in check
+                    }
+                }
+            }
+        }
+        return false; // No threats found
+    }
+
+    function isCheckmate(board, kingColor) {
+        // Jos ei check, ei checkmate
+        if (!isKingInCheck(board, kingColor)) return false;
+
+        // K‰yd‰‰n l‰pi jokainen oman v‰rin nappula
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+
+                const piece = board[r][c];
+                if (!piece || piece.color !== kingColor) continue;
+
+                const moves = getValidMoves(board, r, c);
+
+
+                for (let move of moves) {
+                    // Simuloidaan siirto
+                    //const copy = board.map(row => row.slice());
+                    const copy = JSON.parse(JSON.stringify(board));
+
+                    //if (!copy[r] || !copy[r][c]) {
+                    //    console.error("Invalid source:", r, c, copy);
+                    //}
+                    //if (!copy[move.row]) {
+                    //    console.error("Invalid destination row:", move.row);
+                    //}
+
+
+                    copy[move.row][move.col] = copy[r][c];
+                    copy[r][c] = null;
+
+                    // Jos t‰m‰n j‰lkeen ei ole check
+                    if (!isKingInCheck(copy, kingColor)) {
+                        return false; // yh‰ puolustuskeinoja -> ei mate
+                    }
+                }
+            }
+        }
+
+        // Ei ainuttakaan pelastavaa siirtoa
+        return true;
+    }
+
+        
+    function getQueenMoves(board, row, col, piece) {
+
+        const moves = [];
+        if (!piece) return moves;
+        console.log("Getting queen moves for piece:", piece);
+        // normalize type value (accept 'Q' or 'queen')
+        const typeStr = (piece.type || "").toString();
+        const isQueen =
+            typeStr === "Q" || typeStr.toLowerCase() === "queen" || typeStr === "q";
+        if (!isQueen) return moves;
+
+        // Combine rook and bishop directions
+        const directions = [
+            { dr: -1, dc: 0 },
+            { dr: 1, dc: 0 },
+            { dr: 0, dc: -1 },
+            { dr: 0, dc: 1 },
+            { dr: -1, dc: -1 },
+            { dr: -1, dc: 1 },
+            { dr: 1, dc: -1 },
+            { dr: 1, dc: 1 },
+        ];
+
+        for (const dir of directions) {
+            let newR = row + dir.dr;
+            let newC = col + dir.dc;
+            while (inBounds(newR, newC)) {
+                const targetPiece = board[newR][newC];
+                if (!targetPiece) {
+                    // Empty square
+                    moves.push({ r: newR, c: newC });
+                } else {
+                    // Occupied square
+                    if (targetPiece.color !== piece.color) {
+                        // Enemy piece - can capture
+                        moves.push({ r: newR, c: newC });
+                    }
+                    // Stop searching in this direction
+                    break;
+                }
+                newR += dir.dr;
+                newC += dir.dc;
+            }
+        }
+        console.log("Queen moves:", moves);
+        return moves;
+    }
+
+
+    // --- Rook movement logic (supports 'R' or 'rook' types) ---
+    function getRookMoves(board, row, col, piece) {
+
+        const moves = [];
+
+        if (!piece) return moves;
+
+        console.log("Getting rook moves for piece:", piece);
+        // normalize type value (accept 'R' or 'rook')
+
+        const typeStr = (piece.type || "").toString();
+
+        const isRook =
+            typeStr === "R" || typeStr.toLowerCase() === "rook" || typeStr === "r";
+        if (!isRook) return moves;
+
+        const directions = [
+            { dr: -1, dc: 0 },
+            { dr: 1, dc: 0 },
+            { dr: 0, dc: -1 },
+            { dr: 0, dc: 1 },
+        ];
+
+        for (const dir of directions) {
+            let newR = row + dir.dr;
+            let newC = col + dir.dc;
+            while (inBounds(newR, newC)) {
+                const targetPiece = board[newR][newC];
+                if (!targetPiece) {
+                    // Empty square
+                    moves.push({ r: newR, c: newC });
+                } else {
+                    // Occupied square
+                    if (targetPiece.color !== piece.color) {
+                        // Enemy piece - can capture
+                        moves.push({ r: newR, c: newC });
+                    }
+                    // Stop searching in this direction
+                    break;
+                }
+                newR += dir.dr;
+                newC += dir.dc;
+            }
+
+        }
+        return moves;
+    }
+
+ 
+    
+    // --- Bishop movement logic (supports 'B' or 'bishop' types) ---
+    function getBishopMoves(board, row, col, piece) {
+
+        const moves = [];
+        if (!piece) return moves;
+        console.log("Getting bishop moves for piece:", piece);
+        // normalize type value (accept 'B' or 'bishop')
+        const typeStr = (piece.type || "").toString();
+        const isBishop =
+            typeStr === "B" || typeStr.toLowerCase() === "bishop" || typeStr === "b";
+
+        if (!isBishop) return moves;
+
+        const directions = [
+            { dr: -1, dc: -1 },
+            { dr: -1, dc: 1 },
+            { dr: 1, dc: -1 },
+            { dr: 1, dc: 1 },
+        ];
+
+        for (const dir of directions) {
+            let newR = row + dir.dr;
+            let newC = col + dir.dc;
+            while (inBounds(newR, newC)) {
+                const targetPiece = board[newR][newC];
+                if (!targetPiece) {
+                    // Empty square
+                    moves.push({ r: newR, c: newC });
+                } else {
+                    // Occupied square
+                    if (targetPiece.color !== piece.color) {
+                        // Enemy piece - can capture
+                        moves.push({ r: newR, c: newC });
+                    }
+                    // Stop searching in this direction
+                    break;
+                }
+                newR += dir.dr;
+                newC += dir.dc;
+            }
+        }
+        return moves;
+             
+    }
+
+    // --- King movement logic (supports 'K' or 'king' types) ---
+    function getKingMoves(board, row, col, piece) {
+
+        const moves = [];
+        if (!piece) return moves;
+        console.log("Getting king moves for piece:", piece);
+        // normalize type value (accept 'K' or 'king')
+        const typeStr = (piece.type || "").toString();
+        const isKing =
+            typeStr === "K" || typeStr.toLowerCase() === "king" || typeStr === "k";
+        if (!isKing) return moves;
+        const kingMoves = [
+            { dr: -1, dc: -1 },
+            { dr: -1, dc: 0 },
+            { dr: -1, dc: 1 },
+            { dr: 0, dc: -1 },
+            { dr: 0, dc: 1 },
+            { dr: 1, dc: -1 },
+            { dr: 1, dc: 0 },
+            { dr: 1, dc: 1 },
+        ];
+        for (const move of kingMoves) {
+            const newR = row + move.dr;
+            const newC = col + move.dc;
+            if (inBounds(newR, newC)) {
+                const targetPiece = board[newR][newC];
+                // Can move if empty or occupied by enemy piece
+                if (!targetPiece || targetPiece.color !== piece.color) {
+                    moves.push({ r: newR, c: newC });
+                }
+            }
+        }
+        console.log("King moves:", moves);
+        return moves;
+    }
 
     function getKnightMoves(board, row, col, piece) {
         const moves = [];
@@ -113,72 +478,31 @@ export default function ChessBoard({ board, setBoard }) {
         return moves;
     }
 
-    // Click handling:
-    // - If no selected piece: select piece and compute valid moves
-    // - If selected and click is in validMoves: perform move
-    // - If selected and click on another own piece: change selection
-    // - Else: clear selection
-    function handleClick(row, col) {
-        const clickedPiece = board[row][col];
-
-        // No selection yet
-        if (!selected) {
-            if (!clickedPiece) return; // clicking empty square does nothing
-            const moves = getValidMoves(board, row, col);
-            setSelected({ row, col });
-            setValidMoves(moves);
-            return;
-        }
-
-        // Click same square -> deselect
-        if (selected.row === row && selected.col === col) {
-            setSelected(null);
-            setValidMoves([]);
-            return;
-        }
-
-        // If clicked is a friendly piece -> change selection to that piece
-        if (clickedPiece && clickedPiece.color === board[selected.row][selected.col].color) {
-            console.log(`Changing selection to (${row},${col})`);
-            const moves = getValidMoves(board, row, col);
-            setSelected({ row, col });
-            setValidMoves(moves);
-            return;
-        }
-
-        // If clicked square is a valid move -> perform move
-        if (isValidSquare(row, col)) {
-            console.log(`Moving piece from (${selected.row},${selected.col}) to (${row},${col})`);
-            const newBoard = board.map((rowArr) => rowArr.slice()); // shallow copy rows
-            newBoard[row][col] = newBoard[selected.row][selected.col];
-            newBoard[selected.row][selected.col] = null;
-            setBoard(newBoard);
-            setSelected(null);
-            setValidMoves([]);
-            return;
-        }
-
-        // Otherwise clicked an invalid target -> just clear selection
-        setSelected(null);
-        setValidMoves([]);
-    }
+    
 
     // Dispatcher for piece type -> valid moves (start with pawn only)
     function getValidMoves(board, row, col) {
         const piece = board[row][col];
-
-        console.assert(piece, `getValidMoves called on empty square (${row},${col})`);
-
+              
         if (!piece) return [];
 
         const type = (piece.type || "").toString();
-
+               
+        //return moves;
         switch (type) {
             //case "pawn":
             case "P"://Pawn
                 return getPawnMoves(board, row, col, piece);
             case "N"://Knight
                 return getKnightMoves(board, row, col, piece);
+            case "K"://King
+                return getKingMoves(board, row, col, piece);
+            case "B"://Bishop
+                return getBishopMoves(board, row, col, piece);
+            case "R"://Rook
+                return getRookMoves(board, row, col, piece);
+            case "Q"://Queen
+                return getQueenMoves(board, row, col, piece);
             default:
                 return [];
         }
@@ -197,19 +521,28 @@ export default function ChessBoard({ board, setBoard }) {
         >
             {board.map((rowArr, r) =>
                 rowArr.map((square, c) => {
-                    const isSelected = selected && selected.r === r && selected.c === c;
+                    const isSelected = selectedSquare && selectedSquare.r === r && selectedSquare.c === c;
                     const isValid = isValidSquare(r, c);
 
                     return (
                         <div
                             key={`${r}-${c}`}
-                            onClick={() => handleClick(r, c)}
+                            className="board"
+                            onClick={() => handleSquareClick(r, c)}
                             style={{
                                 width: "60px",
                                 height: "60px",
-                                background: (r + c) % 2 === 0 ? "#f0d9b5" : "#b58863",
+                                //background: (r + c) % 2 === 0 ? "#f0d9b5" : "#b58863",
+                                background:
+                                    board[r][c] &&
+                                        board[r][c].type === "K" &&
+                                        checkStatus[board[r][c].color]
+                                        ? "red" // kuningas uhattuna
+                                        : (r + c) % 2 === 0
+                                            ? "#f0d9b5"
+                                            : "#b58863",
                                 boxSizing: "border-box",
-                                border: isSelected ? "3px solid yellow" : isValid ? "3px solid rgba(0,200,0,0.9)" : "1px solid transparent",
+                                border: isSelected ? "3px solid yellow" : isValid ? "solid rgba(0,200,0,0.9)" : "1px solid transparent",
                                 display: "flex",
                                 justifyContent: "center",
                                 alignItems: "center",
