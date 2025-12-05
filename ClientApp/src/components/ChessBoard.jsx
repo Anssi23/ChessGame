@@ -1,5 +1,5 @@
 //toimiva AI versio
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import Piece from "./Piece";
 
 /**
@@ -13,6 +13,19 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
     const [validMoves, setValidMoves] = useState([]);      // array of { r, c }    
     const [checkStatus, setCheckStatus] = useState({ w: false, b: false });
     const [gameOver, setGameOver] = useState(false);
+    const messageTimeoutRef = useRef(null);
+
+    const showTemporaryMessage = (msg, ms = 3000) => {
+        if (messageTimeoutRef.current) {
+            clearTimeout(messageTimeoutRef.current);
+            messageTimeoutRef.current = null;
+        }
+        setMessage(msg);
+        messageTimeoutRef.current = setTimeout(() => {
+            setMessage("");
+            messageTimeoutRef.current = null;
+        }, ms);
+    };
 
     // Safety: ensure board is present and 8x8
     if (!board || !Array.isArray(board) || board.length !== 8) {
@@ -50,6 +63,8 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
     // - If selected and click on another own piece: change selection
     // - Else: clear selection
     function handleSquareClick(row, col) {
+        // If game is over, ignore clicks
+        if (gameOver) return;
         const clickedPiece = board[row][col];
 
         // Jos ei ole valittua ruutua, saa klikata vain oman värin nappulaa
@@ -101,8 +116,7 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
 
 
             if (moveLeavesKingInCheck) {
-                setMessage("Illegal move - king would be in check!");
-                setTimeout(() => setMessage(""), 3000); // banneri katoaa 3s kuluttua
+                showTemporaryMessage("Illegal move - king would be in check!", 3000);
                 setSelectedSquare(null);
                 setValidMoves([]);
                 return; // Siirto estetty!
@@ -119,13 +133,38 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
             setValidMoves([]);
 
             // Päivitä check-tilanne siirron jälkeen
-            //TOIMII
             setCheckStatus({
                 w: isKingInCheck(newBoard, "w"),
                 b: isKingInCheck(newBoard, "b")
             });
 
-            // Vaihda vuoro
+            // Tarkista, onko vastustaja shakissa tai mattitilassa
+            const opponent = currentPlayer === "w" ? "b" : "w";
+            const opponentInCheck = isKingInCheck(newBoard, opponent);
+            const opponentInCheckmate = isCheckmate(newBoard, opponent);
+
+            // Muodosta luettava väri-teksti vastustajalle
+            const opponentName = (opponent === "w" || opponent === "white") ? "White" : "Black";
+
+            if (opponentInCheckmate) {
+                // Persistent checkmate message - clear any pending temporary message timeout first
+                if (messageTimeoutRef.current) {
+                    clearTimeout(messageTimeoutRef.current);
+                    messageTimeoutRef.current = null;
+                }
+                setMessage(`Checkmate! ${currentPlayer === "w" ? "White" : "Black"} wins!`);
+                setGameOver(true);
+                return; // peli päättynyt, älä vaihda vuoroa
+            }
+
+            if (opponentInCheck) {
+                // Temporary check message unless game over
+                if (!gameOver) showTemporaryMessage(`CHECK on ${opponentName} king!`, 3000);
+            } else {
+                if (!gameOver) setMessage("");
+            }
+
+            // Vaihda vuoro (jos peli ei päättynyt)
             setCurrentPlayer(prev => (prev === "w" ? "b" : "w"));
 
             return;
@@ -160,8 +199,17 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
                 if (piece && piece.color !== color) {
                     const moves = getValidMoves(board, r, c);
                     if (moves.some((m) => m.r === kingPos.r && m.c === kingPos.c)) {
-                        setMessage("CHECK!");
-                        setTimeout(() => setMessage(""), 3000);
+                        const colorName = (color === "w" || color === "white") ? "White" : "Black";
+                        // Only show temporary message if game is not over. If gameOver, keep message persistent and clear any pending timeout.
+                        if (!gameOver) {
+                            showTemporaryMessage(`CHECK on ${colorName} king!`);
+                        } else {
+                            if (messageTimeoutRef.current) {
+                                clearTimeout(messageTimeoutRef.current);
+                                messageTimeoutRef.current = null;
+                            }
+                            setMessage(`CHECK on ${colorName} king!`);
+                        }
                         return true; // King is in check
                     }
                 }
@@ -192,12 +240,12 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
                     //if (!copy[r] || !copy[r][c]) {
                     //    console.error("Invalid source:", r, c, copy);
                     //}
-                    //if (!copy[move.row]) {
-                    //    console.error("Invalid destination row:", move.row);
+                    //if (!copy[move.r]) {
+                    //    console.error("Invalid destination row:", move.r);
                     //}
 
 
-                    copy[move.row][move.col] = copy[r][c];
+                    copy[move.r][move.c] = copy[r][c];
                     copy[r][c] = null;
 
                     // Jos tämän jälkeen ei ole check
