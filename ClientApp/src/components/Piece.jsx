@@ -24,7 +24,7 @@ const pieceImages = {
 };
 
 
-export default function Piece({ piece }) {
+export default function Piece({ piece, size }) {
 
     if (!piece) return null; // tyhjä ruutu
 
@@ -33,17 +33,22 @@ export default function Piece({ piece }) {
 
     if (!imgSrc) return null;
 
-   
+    // If a fixed size (px) is provided, render with that size; otherwise fill parent
+    const style = size
+        ? {
+              width: `${size}px`,
+              height: `${size}px`,
+              objectFit: "contain",
+              pointerEvents: "none",
+          }
+        : {
+              width: "100%",
+              height: "100%",
+              objectFit: "contain",
+              pointerEvents: "none",
+          };
+
     return (
-        <img
-            src={imgSrc}
-            alt={`${color === "w" ? "white" : "black"} ${type}`}
-            style={{
-                width: "100%",
-                height: "100%",
-                objectFit: "contain",
-                pointerEvents: "none",
-            }}
-        />
+        <img src={imgSrc} alt={`${color === "w" ? "white" : "black"} ${type}`} style={style} />
     );
 }

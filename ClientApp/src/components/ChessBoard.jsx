@@ -14,6 +14,7 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
     const [checkStatus, setCheckStatus] = useState({ w: false, b: false });
     const [gameOver, setGameOver] = useState(false);
     const messageTimeoutRef = useRef(null);
+    const [captured, setCaptured] = useState({ w: [], b: [] });
 
     const showTemporaryMessage = (msg, ms = 3000) => {
         if (messageTimeoutRef.current) {
@@ -124,6 +125,12 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
 
             // 2. Suorita siirto
             const newBoard = board.map((rowArr) => rowArr.slice()); // shallow copy rows
+            // If target has a piece, record capture before overwriting
+            const targetPiece = newBoard[row][col];
+            if (targetPiece) {
+                // store captured piece by its color (captured[color] contains pieces of that color)
+                setCaptured(prev => ({ ...prev, [targetPiece.color]: [...prev[targetPiece.color], targetPiece] }));
+            }
             newBoard[row][col] = newBoard[selectedSquare.row][selectedSquare.col];
             newBoard[selectedSquare.row][selectedSquare.col] = null;
 
@@ -559,49 +566,74 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
 
 
     return (
-        <div
-            style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(8, 60px)",
-                gridTemplateRows: "repeat(8, 60px)",
-                border: "2px solid black",
-            }}
-        >
-            {board.map((rowArr, r) =>
-                rowArr.map((square, c) => {
-                    const isSelected = selectedSquare && selectedSquare.r === r && selectedSquare.c === c;
-                    const isValid = isValidSquare(r, c);
+        <div style={{ display: 'flex', gap: 12 }}>
+            {/* Main board on the left */}
+            <div
+                style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(8, 60px)",
+                    gridTemplateRows: "repeat(8, 60px)",
+                    border: "2px solid black",
+                }}
+            >
+                {board.map((rowArr, r) =>
+                    rowArr.map((square, c) => {
+                        const isSelected = selectedSquare && selectedSquare.r === r && selectedSquare.c === c;
+                        const isValid = isValidSquare(r, c);
 
-                    return (
-                        <div
-                            key={`${r}-${c}`}
-                            className="board"
-                            onClick={() => handleSquareClick(r, c)}
-                            style={{
-                                width: "60px",
-                                height: "60px",
-                                //background: (r + c) % 2 === 0 ? "#f0d9b5" : "#b58863",
-                                background:
-                                    board[r][c] &&
-                                        board[r][c].type === "K" &&
-                                        checkStatus[board[r][c].color]
-                                        ? "red" // kuningas uhattuna
-                                        : (r + c) % 2 === 0
-                                            ? "#f0d9b5"
-                                            : "#b58863",
-                                boxSizing: "border-box",
-                                border: isSelected ? "3px solid yellow" : isValid ? "solid rgba(0,200,0,0.9)" : "1px solid transparent",
-                                display: "flex",
-                                justifyContent: "center",
-                                alignItems: "center",
-                                cursor: square ? "pointer" : "default",
-                            }}
-                        >
-                            <Piece piece={square} />
-                        </div>
-                    );
-                })
-            )}
+                        return (
+                            <div
+                                key={`${r}-${c}`}
+                                className="board"
+                                onClick={() => handleSquareClick(r, c)}
+                                style={{
+                                    width: "60px",
+                                    height: "60px",
+                                    background:
+                                        board[r][c] &&
+                                            board[r][c].type === "K" &&
+                                            checkStatus[board[r][c].color]
+                                            ? "red"
+                                            : (r + c) % 2 === 0
+                                                ? "#f0d9b5"
+                                                : "#b58863",
+                                    boxSizing: "border-box",
+                                    border: isSelected ? "3px solid yellow" : isValid ? "solid rgba(0,200,0,0.9)" : "1px solid transparent",
+                                    display: "flex",
+                                    justifyContent: "center",
+                                    alignItems: "center",
+                                    cursor: square ? "pointer" : "default",
+                                }}
+                            >
+                                <Piece piece={square} />
+                            </div>
+                        );
+                    })
+                )}
+            </div>
+
+            {/* Captured pieces column on the right */}
+            <div style={{ width: 160 }}>
+                <div style={{ marginBottom: 12 }}>
+                    <strong>Captured</strong>
+                </div>
+                <div style={{ marginBottom: 8 }}>
+                    <div style={{ fontSize: 12, marginBottom: 6 }}>White</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {captured.w.map((p, i) => (
+                            <Piece key={`capt-w-${i}`} piece={p} size={30} />
+                        ))}
+                    </div>
+                </div>
+                <div>
+                    <div style={{ fontSize: 12, marginBottom: 6 }}>Black</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {captured.b.map((p, i) => (
+                            <Piece key={`capt-b-${i}`} piece={p} size={30} />
+                        ))}
+                    </div>
+                </div>
+            </div>
         </div>
     );
 }
