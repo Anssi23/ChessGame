@@ -1,6 +1,8 @@
 //toimiva AI versio
 import React, { useState, useRef } from "react";
 import Piece from "./Piece";
+import pawnWFlying from "../assets/pieces/PawnW - Flying.png";
+import pawnBFlying from "../assets/pieces/PawnB - Flying.png";
 
 /**
  * ChessBoard component
@@ -15,6 +17,8 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
     const [gameOver, setGameOver] = useState(false);
     const messageTimeoutRef = useRef(null);
     const [captured, setCaptured] = useState({ w: [], b: [] });
+    const [flying, setFlying] = useState([]); // { id, piece, left, top, tx, ty, size }
+    const capturedRef = useRef(null);
 
     const showTemporaryMessage = (msg, ms = 3000) => {
         if (messageTimeoutRef.current) {
@@ -125,12 +129,9 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
 
             // 2. Suorita siirto
             const newBoard = board.map((rowArr) => rowArr.slice()); // shallow copy rows
-            // If target has a piece, record capture before overwriting
+            // If target has a piece, animate capture before adding to captured list
             const targetPiece = newBoard[row][col];
-            if (targetPiece) {
-                // store captured piece by its color (captured[color] contains pieces of that color)
-                setCaptured(prev => ({ ...prev, [targetPiece.color]: [...prev[targetPiece.color], targetPiece] }));
-            }
+            // perform move on board regardless of animation
             newBoard[row][col] = newBoard[selectedSquare.row][selectedSquare.col];
             newBoard[selectedSquare.row][selectedSquare.col] = null;
 
@@ -138,6 +139,43 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
             setBoard(newBoard);
             setSelectedSquare(null);
             setValidMoves([]);
+
+            // If there was a captured piece, start flying animation then add to captured
+            if (targetPiece) {
+                try {
+                    // source element
+                    const cellEl = document.querySelector(`[data-square="${row}-${col}"]`);
+                    const srcRect = cellEl ? cellEl.getBoundingClientRect() : null;
+                    const destRect = capturedRef.current ? capturedRef.current.getBoundingClientRect() : null;
+                    const index = captured[targetPiece.color].length;
+                    const size = 30;
+                    const startLeft = srcRect ? srcRect.left + window.scrollX : 0;
+                    const startTop = srcRect ? srcRect.top + window.scrollY : 0;
+                    // place destination slightly offset inside captured area
+                    const destLeft = destRect ? destRect.left + window.scrollX + 8 : startLeft;
+                    const destTop = destRect ? destRect.top + window.scrollY + 24 + index * (size + 6) : startTop;
+
+                    const id = Date.now() + Math.random();
+                    // add flying element at start position
+                    setFlying(prev => [...prev, { id, piece: targetPiece, left: startLeft, top: startTop, tx: 0, ty: 0, size }]);
+
+                    // after render, calculate translation and trigger transition
+                    requestAnimationFrame(() => {
+                        const tx = destLeft - startLeft;
+                        const ty = destTop - startTop;
+                        setFlying(prev => prev.map(f => f.id === id ? { ...f, tx, ty } : f));
+
+                        // after animation ends, remove flying and add to captured list
+                        setTimeout(() => {
+                            setFlying(prev => prev.filter(f => f.id !== id));
+                            setCaptured(prev => ({ ...prev, [targetPiece.color]: [...prev[targetPiece.color], targetPiece] }));
+                        }, 900); // match transition duration
+                    });
+                } catch (e) {
+                    // fallback: if anything fails, just add to captured
+                    setCaptured(prev => ({ ...prev, [targetPiece.color]: [...prev[targetPiece.color], targetPiece] }));
+                }
+            }
 
             // Päivitä check-tilanne siirron jälkeen
             setCheckStatus({
@@ -578,25 +616,29 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
             >
                 {board.map((rowArr, r) =>
                     rowArr.map((square, c) => {
-                        const isSelected = selectedSquare && selectedSquare.r === r && selectedSquare.c === c;
+                        const isSelected = selectedSquare && selectedSquare.row === r && selectedSquare.col === c;
                         const isValid = isValidSquare(r, c);
+
+                        // determine background: selection highlight overrides normal colors
+                        let bg;
+                        if (isSelected) {
+                            bg = 'rgba(255, 255, 0, 0.6)';
+                        } else if (board[r][c] && board[r][c].type === "K" && checkStatus[board[r][c].color]) {
+                            bg = 'red';
+                        } else {
+                            bg = (r + c) % 2 === 0 ? "#f0d9b5" : "#b58863";
+                        }
 
                         return (
                             <div
                                 key={`${r}-${c}`}
+                                data-square={`${r}-${c}`}
                                 className="board"
                                 onClick={() => handleSquareClick(r, c)}
                                 style={{
                                     width: "60px",
                                     height: "60px",
-                                    background:
-                                        board[r][c] &&
-                                            board[r][c].type === "K" &&
-                                            checkStatus[board[r][c].color]
-                                            ? "red"
-                                            : (r + c) % 2 === 0
-                                                ? "#f0d9b5"
-                                                : "#b58863",
+                                    background: bg,
                                     boxSizing: "border-box",
                                     border: isSelected ? "3px solid yellow" : isValid ? "solid rgba(0,200,0,0.9)" : "1px solid transparent",
                                     display: "flex",
@@ -612,8 +654,33 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
                 )}
             </div>
 
+            {/* Flying captured pieces overlay */}
+            {flying.map(f => (
+                    <img
+                    key={`fly-${f.id}`}
+                    src={
+                        f.piece && f.piece.type === 'P'
+                            ? (f.piece.color === 'w' ? pawnWFlying : pawnBFlying)
+                            : ''
+                    }
+                    alt=""
+                    style={{
+                        position: 'fixed',
+                        left: f.left,
+                        top: f.top,
+                        width: f.size,
+                        height: f.size,
+                        transform: `translate(${f.tx}px, ${f.ty}px) rotate(0deg)`,
+                        transition: 'transform 0.9s ease-in-out, opacity 0.9s ease-in-out',
+                        opacity: 1,
+                        pointerEvents: 'none',
+                        zIndex: 9999
+                    }}
+                />
+            ))}
+
             {/* Captured pieces column on the right */}
-            <div style={{ width: 160 }}>
+            <div style={{ width: 160 }} ref={capturedRef}>
                 <div style={{ marginBottom: 12 }}>
                     <strong>Captured</strong>
                 </div>
