@@ -45,7 +45,7 @@ function App() {
                 currentPlayer={currentPlayer}
                 setCurrentPlayer={setCurrentPlayer}
                 setMessage={setMessage}
-            />;
+            />
         </div>
     );
 }

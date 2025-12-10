@@ -110,6 +110,53 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
     // Helper: check if a coordinate is inside board
     const inBounds = (r, c) => r >= 0 && r < 8 && c >= 0 && c < 8;
 
+    // Check if a square (r,c) is attacked by any piece of color `byColor`
+    const isSquareAttacked = (board, r, c, byColor) => {
+        // iterate all pieces of byColor and see if any has a move to r,c
+        for (let rr = 0; rr < 8; rr++) {
+            for (let cc = 0; cc < 8; cc++) {
+                const p = board[rr][cc];
+                if (!p || p.color !== byColor) continue;
+                const t = (p.type || "").toString();
+                let moves = [];
+                switch (t) {
+                    case "P":
+                        moves = getPawnMoves(board, rr, cc, p);
+                        break;
+                    case "N":
+                        moves = getKnightMoves(board, rr, cc, p);
+                        break;
+                    case "B":
+                        moves = getBishopMoves(board, rr, cc, p);
+                        break;
+                    case "R":
+                        moves = getRookMoves(board, rr, cc, p);
+                        break;
+                    case "Q":
+                        moves = getQueenMoves(board, rr, cc, p);
+                        break;
+                    case "K":
+                        // king attacks adjacent squares only
+                        moves = [];
+                        const kingD = [
+                            { dr: -1, dc: -1 },{ dr: -1, dc: 0 },{ dr: -1, dc: 1 },
+                            { dr: 0, dc: -1 },{ dr: 0, dc: 1 },
+                            { dr: 1, dc: -1 },{ dr: 1, dc: 0 },{ dr: 1, dc: 1 }
+                        ];
+                        for (const d of kingD) {
+                            const nr = rr + d.dr, nc = cc + d.dc;
+                            if (inBounds(nr, nc)) moves.push({ r: nr, c: nc });
+                        }
+                        break;
+                    default:
+                        moves = [];
+                }
+                if (moves.some(m => m.r === r && m.c === c)) return true;
+            }
+        }
+        return false;
+    };
+
     // returns true if given square {r,c} is in validMoves
     const isValidSquare = (r, c) =>
         validMoves.some((m) => m.r === r && m.c === c);
@@ -198,9 +245,35 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
             const newBoard = board.map((rowArr) => rowArr.slice()); // shallow copy rows
             // If target has a piece, animate capture before adding to captured list
             const targetPiece = newBoard[row][col];
+
             // perform move on board regardless of animation
-            newBoard[row][col] = newBoard[selectedSquare.row][selectedSquare.col];
+            const movingPiece = newBoard[selectedSquare.row][selectedSquare.col];
+            // mark moved pieces (avoid mutating original by cloning)
+            newBoard[row][col] = { ...(movingPiece || {}), hasMoved: true };
             newBoard[selectedSquare.row][selectedSquare.col] = null;
+
+            // Handle castling: if king moved two columns, also move the rook
+            if (movingPiece && (movingPiece.type === "K" || movingPiece.type === "k") && Math.abs(col - selectedSquare.col) === 2) {
+                const r = selectedSquare.row;
+                // king-side
+                if (col === 6) {
+                    // rook from col 7 -> col 5
+                    const rook = newBoard[r][7];
+                    if (rook) {
+                        newBoard[r][5] = { ...rook, hasMoved: true };
+                        newBoard[r][7] = null;
+                    }
+                }
+                // queen-side
+                if (col === 2) {
+                    // rook from col 0 -> col 3
+                    const rook = newBoard[r][0];
+                    if (rook) {
+                        newBoard[r][3] = { ...rook, hasMoved: true };
+                        newBoard[r][0] = null;
+                    }
+                }
+            }
 
 
             setBoard(newBoard);
@@ -537,12 +610,7 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
 
         const moves = [];
         if (!piece) return moves;
-        console.log("Getting king moves for piece:", piece);
-        // normalize type value (accept 'K' or 'king')
-        const typeStr = (piece.type || "").toString();
-        const isKing =
-            typeStr === "K" || typeStr.toLowerCase() === "king" || typeStr === "k";
-        if (!isKing) return moves;
+        // basic king moves
         const kingMoves = [
             { dr: -1, dc: -1 },
             { dr: -1, dc: 0 },
@@ -553,18 +621,42 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
             { dr: 1, dc: 0 },
             { dr: 1, dc: 1 },
         ];
-        for (const move of kingMoves) {
-            const newR = row + move.dr;
-            const newC = col + move.dc;
-            if (inBounds(newR, newC)) {
-                const targetPiece = board[newR][newC];
-                // Can move if empty or occupied by enemy piece
-                if (!targetPiece || targetPiece.color !== piece.color) {
-                    moves.push({ r: newR, c: newC });
+        for (const m of kingMoves) {
+            const nr = row + m.dr;
+            const nc = col + m.dc;
+            if (!inBounds(nr, nc)) continue;
+            const tp = board[nr][nc];
+            if (!tp || tp.color !== piece.color) moves.push({ r: nr, c: nc });
+        }
+
+        // Castling: only if king hasn't moved and not currently in check
+        const opponent = piece.color === 'w' ? 'b' : 'w';
+        if (!piece.hasMoved && !isSquareAttacked(board, row, col, opponent)) {
+            // king-side: rook at col 7
+            const rookK = board[row][7];
+            if (rookK && rookK.type === 'R' && rookK.color === piece.color && !rookK.hasMoved) {
+                // squares between king and rook must be empty: col+1 and col+2
+                if (!board[row][5] && !board[row][6]) {
+                    // squares king passes through (col+1 and col+2) must not be attacked
+                    if (!isSquareAttacked(board, row, 5, opponent) && !isSquareAttacked(board, row, 6, opponent)) {
+                        moves.push({ r: row, c: 6, castle: 'king' });
+                    }
+                }
+            }
+
+            // queen-side: rook at col 0
+            const rookQ = board[row][0];
+            if (rookQ && rookQ.type === 'R' && rookQ.color === piece.color && !rookQ.hasMoved) {
+                // squares between king and rook: col-1, col-2, col-3 must be empty (we require col-1 and col-2 and col-3)
+                if (!board[row][1] && !board[row][2] && !board[row][3]) {
+                    // squares the king passes through: col-1 (3) and col-2 (2) must not be attacked
+                    if (!isSquareAttacked(board, row, 3, opponent) && !isSquareAttacked(board, row, 2, opponent)) {
+                        moves.push({ r: row, c: 2, castle: 'queen' });
+                    }
                 }
             }
         }
-        console.log("King moves:", moves);
+
         return moves;
     }
 
