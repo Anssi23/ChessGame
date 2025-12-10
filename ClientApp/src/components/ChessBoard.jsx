@@ -1,8 +1,24 @@
 //toimiva AI versio
 import React, { useState, useRef } from "react";
 import Piece from "./Piece";
-import pawnWFlying from "../assets/pieces/PawnW - Flying.png";
-import pawnBFlying from "../assets/pieces/PawnB - Flying.png";
+import { pieceImages } from './Piece';
+
+// Helper to load flying image for a captured piece (e.g. "KingW - Flying.png")
+function getFlyingSrc(piece) {
+    if (!piece) return "";
+    const typeMap = { K: 'King', Q: 'Queen', R: 'Rook', B: 'Bishop', N: 'Knight', P: 'Pawn' };
+    const base = typeMap[piece.type] || piece.type;
+    const colorLetter = (piece.color || 'w').toString().toUpperCase() === 'W' ? 'W' : 'B';
+    const filename = `${base}${colorLetter} - Flying.png`;
+    try {
+        // dynamic require - webpack will include matching assets
+        // eslint-disable-next-line global-require, import/no-dynamic-require
+        return require(`../assets/pieces/${filename}`);
+    } catch (e) {
+        // fallback to regular piece image if flying image not found
+        return pieceImages[piece.type] ? pieceImages[piece.type][piece.color] : '';
+    }
+}
 
 /**
  * ChessBoard component
@@ -19,6 +35,57 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
     const [captured, setCaptured] = useState({ w: [], b: [] });
     const [flying, setFlying] = useState([]); // { id, piece, left, top, tx, ty, size }
     const capturedRef = useRef(null);
+    const rafRef = useRef(null);
+
+    // Animation step using sine-wave path. Runs via requestAnimationFrame while there are flying items.
+    const stepFlying = () => {
+        setFlying(prev => {
+            const now = performance.now();
+            const next = [];
+            const toAdd = { w: [], b: [] };
+
+            for (const f of prev) {
+                const elapsed = Math.max(0, now - (f.startTime || 0));
+                const t = Math.min(1, elapsed / (f.duration || 1900));
+                const x = (f.startLeft || f.left) + ((f.destLeft || (f.left + (f.tx || 0))) - (f.startLeft || f.left)) * t;
+                const baseY = (f.startTop || f.top) + ((f.destTop || (f.top + (f.ty || 0))) - (f.startTop || f.top)) * t;
+                const amp = f.amplitude || 20;
+                const freq = f.frequency || 2; // cycles
+                const y = baseY + amp * Math.sin(t * 2 * Math.PI * freq);
+
+                if (t >= 1) {
+                    // animation finished -> collect captured
+                    if (f.piece && f.piece.color) {
+                        toAdd[f.piece.color] = toAdd[f.piece.color] || [];
+                        toAdd[f.piece.color].push(f.piece);
+                    }
+                } else {
+                    next.push({ ...f, currentLeft: x, currentTop: y });
+                }
+            }
+
+            // add captured pieces accumulated
+            const hasAdds = (toAdd.w && toAdd.w.length) || (toAdd.b && toAdd.b.length);
+            if (hasAdds) {
+                setCaptured(prevC => ({
+                    w: [...prevC.w, ...(toAdd.w || [])],
+                    b: [...prevC.b, ...(toAdd.b || [])]
+                }));
+            }
+
+            // schedule next frame if still flying
+            if (next.length > 0) {
+                rafRef.current = requestAnimationFrame(stepFlying);
+            } else {
+                if (rafRef.current) {
+                    cancelAnimationFrame(rafRef.current);
+                    rafRef.current = null;
+                }
+            }
+
+            return next;
+        });
+    };
 
     const showTemporaryMessage = (msg, ms = 3000) => {
         if (messageTimeoutRef.current) {
@@ -156,21 +223,36 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
                     const destTop = destRect ? destRect.top + window.scrollY + 24 + index * (size + 6) : startTop;
 
                     const id = Date.now() + Math.random();
-                    // add flying element at start position
-                    setFlying(prev => [...prev, { id, piece: targetPiece, left: startLeft, top: startTop, tx: 0, ty: 0, size }]);
+                    const duration = 1900; // ms
+                    const amplitude = 24; // px (slightly larger)
+                    const frequency = 2; // cycles
+                    const sLeft = startLeft;
+                    const sTop = startTop;
+                    const destLeftFinal = destLeft;
+                    const destTopFinal = destTop;
+                    const startTime = performance.now();
 
-                    // after render, calculate translation and trigger transition
-                    requestAnimationFrame(() => {
-                        const tx = destLeft - startLeft;
-                        const ty = destTop - startTop;
-                        setFlying(prev => prev.map(f => f.id === id ? { ...f, tx, ty } : f));
+                    // add flying element with params
+                    setFlying(prev => [...prev, {
+                        id,
+                        piece: targetPiece,
+                        left: sLeft,
+                        top: sTop,
+                        startLeft: sLeft,
+                        startTop: sTop,
+                        destLeft: destLeftFinal,
+                        destTop: destTopFinal,
+                        duration,
+                        amplitude,
+                        frequency,
+                        size,
+                        startTime
+                    }]);
 
-                        // after animation ends, remove flying and add to captured list
-                        setTimeout(() => {
-                            setFlying(prev => prev.filter(f => f.id !== id));
-                            setCaptured(prev => ({ ...prev, [targetPiece.color]: [...prev[targetPiece.color], targetPiece] }));
-                        }, 900); // match transition duration
-                    });
+                    // start RAF loop if not already running
+                    if (!rafRef.current) {
+                        rafRef.current = requestAnimationFrame(stepFlying);
+                    }
                 } catch (e) {
                     // fallback: if anything fails, just add to captured
                     setCaptured(prev => ({ ...prev, [targetPiece.color]: [...prev[targetPiece.color], targetPiece] }));
@@ -655,28 +737,34 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
             </div>
 
             {/* Flying captured pieces overlay */}
+            {/* Flying elements rendered and positioned by RAF sine-wave logic (no flap animations) */}
             {flying.map(f => (
-                    <img
+                <div
                     key={`fly-${f.id}`}
-                    src={
-                        f.piece && f.piece.type === 'P'
-                            ? (f.piece.color === 'w' ? pawnWFlying : pawnBFlying)
-                            : ''
-                    }
-                    alt=""
                     style={{
                         position: 'fixed',
-                        left: f.left,
-                        top: f.top,
+                        left: f.currentLeft ?? f.left,
+                        top: f.currentTop ?? f.top,
                         width: f.size,
                         height: f.size,
-                        transform: `translate(${f.tx}px, ${f.ty}px) rotate(0deg)`,
-                        transition: 'transform 0.9s ease-in-out, opacity 0.9s ease-in-out',
-                        opacity: 1,
                         pointerEvents: 'none',
-                        zIndex: 9999
+                        zIndex: 9999,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        transform: 'translate(0,0)'
                     }}
-                />
+                >
+                    <img
+                        src={getFlyingSrc(f.piece)}
+                        alt=""
+                        style={{
+                            width: f.size,
+                            height: f.size,
+                            transformOrigin: '50% 50%'
+                        }}
+                    />
+                </div>
             ))}
 
             {/* Captured pieces column on the right */}

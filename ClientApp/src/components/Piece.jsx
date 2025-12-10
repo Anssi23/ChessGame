@@ -23,6 +23,8 @@ const pieceImages = {
     P: { w: whitePawn, b: blackPawn }
 };
 
+export { pieceImages };
+
 
 export default function Piece({ piece, size }) {
 
