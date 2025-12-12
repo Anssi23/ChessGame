@@ -1,27 +1,31 @@
 const { createProxyMiddleware } = require('http-proxy-middleware');
-const { env } = require('process');
+const env = process.env;
 
-const target = env.ASPNETCORE_HTTPS_PORT ? `https://localhost:${env.ASPNETCORE_HTTPS_PORT}` :
-  env.ASPNETCORE_URLS ? env.ASPNETCORE_URLS.split(';')[0] : 'http://localhost:22411';
+// Default to the backend HTTPS URL that the ASP.NET app prints when it starts.
+// You can override by setting ASPNETCORE_HTTPS_PORT or ASPNETCORE_URLS in env.
+const target = env.ASPNETCORE_HTTPS_PORT
+  ? `https://localhost:${env.ASPNETCORE_HTTPS_PORT}`
+  : env.ASPNETCORE_URLS
+    ? env.ASPNETCORE_URLS.split(';')[0]
+    : 'https://localhost:7124';
 
+// Proxy any API calls under /api to the backend
 const context = [
-  "/weatherforecast",
+  '/api',
 ];
 
-const onError = (err, req, resp, target) => {
-    console.error(`${err.message}`);
-}
+const onError = (err, req, resp) => {
+  console.error('Proxy error:', err && err.message ? err.message : err);
+};
 
 module.exports = function (app) {
+  console.log('[setupProxy] using target:', target);
   const appProxy = createProxyMiddleware(context, {
     proxyTimeout: 10000,
     target: target,
-    // Handle errors to prevent the proxy middleware from crashing when
-    // the ASP NET Core webserver is unavailable
+    changeOrigin: true,
     onError: onError,
     secure: false,
-    // Uncomment this line to add support for proxying websockets
-    //ws: true, 
     headers: {
       Connection: 'Keep-Alive'
     }

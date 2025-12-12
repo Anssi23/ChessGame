@@ -2,6 +2,7 @@
 import React, { useState, useRef } from "react";
 import Piece from "./Piece";
 import { pieceImages } from './Piece';
+import { makeMove } from '../api/gameApi';
 
 // Helper to load flying image for a captured piece (e.g. "KingW - Flying.png")
 function getFlyingSrc(piece) {
@@ -105,7 +106,7 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
     }
 
     // Helper: check if two squares are equal
-    const eq = (a, b) => a?.r === b?.r && a?.c === b?.c;
+    //const eq = (a, b) => a?.r === b?.r && a?.c === b?.c;
 
     // Helper: check if a coordinate is inside board
     const inBounds = (r, c) => r >= 0 && r < 8 && c >= 0 && c < 8;
@@ -276,9 +277,39 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
             }
 
 
+            // persist local coordinates for backend call
+            const fromRow = selectedSquare.row;
+            const fromCol = selectedSquare.col;
+
             setBoard(newBoard);
             setSelectedSquare(null);
             setValidMoves([]);
+
+            // Send move to backend to keep server-side board in sync and update client from server
+            (async () => {
+                try {
+                    const res = await makeMove({ FromRow: fromRow, FromCol: fromCol, ToRow: row, ToCol: col });
+                    // backend returns serializable board (Squares jagged array)
+                    const dto = res?.Squares ?? res?.squares ?? (Array.isArray(res) ? res : null);
+                    if (dto && Array.isArray(dto) && dto.length === 8) {
+                        const typeMap = { King: 'K', Queen: 'Q', Rook: 'R', Bishop: 'B', Knight: 'N', Pawn: 'P' };
+                        const colorMap = { White: 'w', Black: 'b' };
+                        const mapped = dto.map(rowArr => rowArr.map(cell => {
+                            if (!cell) return null;
+                            const t = cell.type ?? cell.Type ?? '';
+                            const c = cell.color ?? cell.Color ?? '';
+                            const typeLetter = typeof t === 'string' ? (t.length === 1 ? t.toUpperCase() : (typeMap[t] || null)) : (t != null ? String(t) : null);
+                            const colorLetter = typeof c === 'string' ? (c.length === 1 ? c.toLowerCase() : (colorMap[c] || null)) : (c === 0 ? 'w' : 'b');
+                            if (!typeLetter || !colorLetter) return null;
+                            return { type: typeLetter, color: colorLetter };
+                        }));
+                        setBoard(mapped);
+                    }
+                } catch (err) {
+                    console.error('Failed to send move to server', err);
+                    showTemporaryMessage('Failed to persist move to server');
+                }
+            })();
 
             // If there was a captured piece, start flying animation then add to captured
             if (targetPiece) {
@@ -607,7 +638,7 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
 
     // --- King movement logic (supports 'K' or 'king' types) ---
     function getKingMoves(board, row, col, piece) {
-
+        
         const moves = [];
         if (!piece) return moves;
         // basic king moves

@@ -13,6 +13,10 @@ builder.Services.AddDbContext<ChessContext>(options =>
 
 builder.Services.AddSingleton<GameService>();//lisätty 13.11.2025 AAi
 
+// Ensure console logging is enabled so server logs appear in the terminal
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+builder.Logging.AddDebug();
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
