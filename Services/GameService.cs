@@ -1,5 +1,4 @@
 using ChessGame.Models;
-using ChessGame.Models;
 using System;
 using System.IO;
 using System.Linq;
@@ -288,6 +287,38 @@ namespace ChessGame.Services
             if (piece != null)
             {
                 piece.Position = ColRowToPosition(request.ToRow, request.ToCol);
+                // mark piece as moved (affects castling rules)
+                piece.HasMoved = true;
+            }
+
+            // If this was a castling move (king moves two columns), also move the rook and mark it moved
+            if (piece != null && piece.Type == PieceType.King && Math.Abs(request.ToCol - request.FromCol) == 2)
+            {
+                var row = request.ToRow;
+                // king-side castling
+                if (request.ToCol == 6)
+                {
+                    var rook = _board.Squares[row, 7];
+                    if (rook != null && rook.Type == PieceType.Rook)
+                    {
+                        _board.Squares[row, 5] = rook;
+                        _board.Squares[row, 7] = null;
+                        rook.Position = ColRowToPosition(row, 5);
+                        rook.HasMoved = true;
+                    }
+                }
+                // queen-side castling
+                else if (request.ToCol == 2)
+                {
+                    var rook = _board.Squares[row, 0];
+                    if (rook != null && rook.Type == PieceType.Rook)
+                    {
+                        _board.Squares[row, 3] = rook;
+                        _board.Squares[row, 0] = null;
+                        rook.Position = ColRowToPosition(row, 3);
+                        rook.HasMoved = true;
+                    }
+                }
             }
 
             error = "";

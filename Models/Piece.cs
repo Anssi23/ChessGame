@@ -13,5 +13,7 @@ namespace ChessGame.Models
         public PieceType Type { get; set; }
         public PieceColor Color { get; set; }
         public required string Position { get; set; } = string.Empty;// esim. "e4"
+        // Indicates whether this piece has moved (affects castling for king/rook)
+        public bool HasMoved { get; set; } = false;
     }
 }

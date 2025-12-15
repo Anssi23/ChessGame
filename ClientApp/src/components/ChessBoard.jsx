@@ -1,5 +1,5 @@
 //toimiva AI versio
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import Piece from "./Piece";
 import { pieceImages } from './Piece';
 import { makeMove } from '../api/gameApi';
@@ -27,7 +27,7 @@ function getFlyingSrc(piece) {
  *  - board: 8x8 array (board[row][col]) where each square is either null or { type: "P"/"K"/..., color: "w"/"b" }
  *  - setBoard: function to update the board state (provided by App.jsx)
  */
-export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentPlayer, message, setMessage }) {
+export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentPlayer, message, setMessage, clearSelectionTrigger }) {
     const [selectedSquare, setSelectedSquare] = useState(null);        // { r, c } or null
     const [validMoves, setValidMoves] = useState([]);      // array of { r, c }    
     const [checkStatus, setCheckStatus] = useState({ w: false, b: false });
@@ -37,6 +37,13 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
     const [flying, setFlying] = useState([]); // { id, piece, left, top, tx, ty, size }
     const capturedRef = useRef(null);
     const rafRef = useRef(null);
+
+    // Clear selection when parent signals a save happened
+    useEffect(() => {
+        if (clearSelectionTrigger == null) return;
+        setSelectedSquare(null);
+        setValidMoves([]);
+    }, [clearSelectionTrigger]);
 
     // Animation step using sine-wave path. Runs via requestAnimationFrame while there are flying items.
     const stepFlying = () => {
@@ -298,10 +305,11 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
                             if (!cell) return null;
                             const t = cell.type ?? cell.Type ?? '';
                             const c = cell.color ?? cell.Color ?? '';
+                            const moved = cell.hasMoved ?? cell.HasMoved ?? false;
                             const typeLetter = typeof t === 'string' ? (t.length === 1 ? t.toUpperCase() : (typeMap[t] || null)) : (t != null ? String(t) : null);
                             const colorLetter = typeof c === 'string' ? (c.length === 1 ? c.toLowerCase() : (colorMap[c] || null)) : (c === 0 ? 'w' : 'b');
                             if (!typeLetter || !colorLetter) return null;
-                            return { type: typeLetter, color: colorLetter };
+                            return { type: typeLetter, color: colorLetter, hasMoved: !!moved };
                         }));
                         setBoard(mapped);
                     }

@@ -12,6 +12,7 @@ function App() {
     const [saveName, setSaveName] = useState("");
     const [messageType, setMessageType] = useState("info"); // "info" | "error" | "success"]
     const [saves, setSaves] = useState([]);
+    const [saveTrigger, setSaveTrigger] = useState(0);
 
     const normalizeSave = (s) => ({
         Id: s.Id ?? s.id ?? '',
@@ -29,6 +30,7 @@ function App() {
             if (!cell) return null;
             const t = cell.type ?? cell.Type ?? '';
             const c = cell.color ?? cell.Color ?? '';
+            const moved = cell.hasMoved ?? cell.HasMoved ?? false;
             let typeLetter = null;
             if (typeof t === 'string') {
                 if (t.length === 1) typeLetter = t.toUpperCase(); else typeLetter = typeNameToLetter[t] ?? null;
@@ -44,7 +46,7 @@ function App() {
                 colorLetter = c === 0 ? 'w' : 'b';
             }
             if (!typeLetter || !colorLetter) return null;
-            return { type: typeLetter, color: colorLetter };
+            return { type: typeLetter, color: colorLetter, hasMoved: !!moved };
         }));
     };
 
@@ -125,6 +127,7 @@ function App() {
                     currentPlayer={currentPlayer}
                     setCurrentPlayer={setCurrentPlayer}
                     setMessage={setMessage}
+                    clearSelectionTrigger={saveTrigger}
                 />
 
                 <div style={{ width: 320 }}>
@@ -136,8 +139,10 @@ function App() {
                                         const res = await saveGame(saveName || 'manual');
                                         setMessage(`Saved: ${res.id}`);
                                         setMessageType('success');
-                                        const list = await getSaves();
-                                        setSaves((list || []).map(normalizeSave));
+                                    const list = await getSaves();
+                                    setSaves((list || []).map(normalizeSave));
+                                    // notify board to clear any selection highlighting
+                                    setSaveTrigger(t => t + 1);
                                     } catch (e) {
                                         setMessage('Save failed');
                                         setMessageType('error');
@@ -180,11 +185,14 @@ function App() {
                                                 setBoard(mapped);
                                                 setMessage('Loaded');
                                                 setMessageType('success');
+                                                // clear any selection highlighting in board
+                                                setSaveTrigger(t => t + 1);
                                             } else if (Array.isArray(dto)) {
                                                 // fallback: maybe backend already returned frontend-shaped board
                                                 setBoard(dto);
                                                 setMessage('Loaded (raw)');
                                                 setMessageType('success');
+                                                setSaveTrigger(t => t + 1);
                                             } else {
                                                 // show debug info if unexpected shape
                                                 setMessage('Loaded data has unexpected shape; see console');
