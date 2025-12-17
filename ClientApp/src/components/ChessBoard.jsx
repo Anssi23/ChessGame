@@ -2,7 +2,35 @@
 import React, { useState, useRef, useEffect } from "react";
 import Piece from "./Piece";
 import { pieceImages } from './Piece';
-import { makeMove } from '../api/gameApi';
+import { makeMove, getBoard } from '../api/gameApi';
+
+// Local mapper (same logic as App.jsx) to convert server DTO -> frontend board
+function mapDtoToBoardLocal(dto) {
+    const typeNameToLetter = { King: 'K', Queen: 'Q', Rook: 'R', Bishop: 'B', Knight: 'N', Pawn: 'P' };
+    const colorNameToLetter = { White: 'w', Black: 'b' };
+    if (!Array.isArray(dto) || dto.length !== 8) return null;
+    return dto.map(row => row.map(cell => {
+        if (!cell) return null;
+        const t = cell.type ?? cell.Type ?? '';
+        const c = cell.color ?? cell.Color ?? '';
+        const moved = cell.hasMoved ?? cell.HasMoved ?? false;
+        let typeLetter = null;
+        if (typeof t === 'string') {
+            if (t.length === 1) typeLetter = t.toUpperCase(); else typeLetter = typeNameToLetter[t] ?? null;
+        } else if (typeof t === 'number') {
+            const numMap = { 0: 'K', 1: 'Q', 2: 'R', 3: 'B', 4: 'N', 5: 'P' };
+            typeLetter = numMap[t];
+        }
+        let colorLetter = null;
+        if (typeof c === 'string') {
+            if (c.length === 1) colorLetter = c.toLowerCase(); else colorLetter = colorNameToLetter[c] ?? null;
+        } else if (typeof c === 'number') {
+            colorLetter = c === 0 ? 'w' : 'b';
+        }
+        if (!typeLetter || !colorLetter) return null;
+        return { type: typeLetter, color: colorLetter, hasMoved: !!moved };
+    }));
+}
 
 // Helper to load flying image for a captured piece (e.g. "KingW - Flying.png")
 function getFlyingSrc(piece) {
@@ -32,11 +60,34 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
     const [validMoves, setValidMoves] = useState([]);      // array of { r, c }    
     const [checkStatus, setCheckStatus] = useState({ w: false, b: false });
     const [gameOver, setGameOver] = useState(false);
+    const [pendingMove, setPendingMove] = useState(false);
     const messageTimeoutRef = useRef(null);
     const [captured, setCaptured] = useState({ w: [], b: [] });
     const [flying, setFlying] = useState([]); // { id, piece, left, top, tx, ty, size }
     const capturedRef = useRef(null);
     const rafRef = useRef(null);
+
+    // If parent did not provide board (null), try to load directly from server as fallback
+    useEffect(() => {
+        let mounted = true;
+        (async () => {
+            if (board && Array.isArray(board) && board.length === 8) return;
+            try {
+                const res = await getBoard();
+                console.log('ChessBoard: getBoard raw:', res);
+                const boardArr = res?.Board?.Squares ?? res?.Board?.squares ?? res?.Board ?? res?.board?.Squares ?? res?.board?.squares ?? res?.board ?? res?.Squares ?? res?.squares ?? (Array.isArray(res) ? res : null);
+                const mapped = boardArr ? mapDtoToBoardLocal(boardArr) : null;
+                if (mounted && mapped) {
+                    setBoard(mapped);
+                    const cp = res?.CurrentPlayer ?? res?.currentPlayer ?? res?.currentplayer ?? null;
+                    if (cp === 'w' || cp === 'b') setCurrentPlayer(cp);
+                }
+            } catch (e) {
+                console.warn('ChessBoard: failed to load board from server', e);
+            }
+        })();
+        return () => { mounted = false; };
+    }, []);
 
     // Clear selection when parent signals a save happened
     useEffect(() => {
@@ -44,6 +95,22 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
         setSelectedSquare(null);
         setValidMoves([]);
     }, [clearSelectionTrigger]);
+
+    // When parent-provided `board` prop changes (e.g., SignalR update), clear pending move
+    // and any transient selection to avoid client-side desync.
+    useEffect(() => {
+        // if a server update arrived, stop blocking interactions and clear selection
+        setPendingMove(false);
+        setSelectedSquare(null);
+        setValidMoves([]);
+    }, [board]);
+
+    // Clear transient animations/captured UI when authoritative board arrives
+    useEffect(() => {
+        // remove any flying animations and reset captured lists to match server
+        setFlying([]);
+        setCaptured({ w: [], b: [] });
+    }, [board]);
 
     // Animation step using sine-wave path. Runs via requestAnimationFrame while there are flying items.
     const stepFlying = () => {
@@ -192,6 +259,12 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
     function handleSquareClick(row, col) {
         // If game is over, ignore clicks
         if (gameOver) return;
+        // If a move is pending server confirmation, ignore further clicks
+        if (pendingMove) return;
+        // If client hasn't yet synced with server initial board, ignore clicks
+        // (prevents mismatches between initialBoard and server board)
+        // serverSynced prop is provided by App.jsx
+        if (typeof window !== 'undefined' && window.__serverSynced === false) return;
         const clickedPiece = board[row][col];
 
         // Jos ei ole valittua ruutua, saa klikata vain oman värin nappulaa
@@ -256,6 +329,15 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
 
             // perform move on board regardless of animation
             const movingPiece = newBoard[selectedSquare.row][selectedSquare.col];
+            // ensure piece still exists and belongs to current player
+            if (!movingPiece) {
+                showTemporaryMessage('Piece not present on server-synced board. Refresh to sync.');
+                return;
+            }
+            if (movingPiece.color !== currentPlayer) {
+                showTemporaryMessage('Not your piece to move.');
+                return;
+            }
             // mark moved pieces (avoid mutating original by cloning)
             newBoard[row][col] = { ...(movingPiece || {}), hasMoved: true };
             newBoard[selectedSquare.row][selectedSquare.col] = null;
@@ -288,30 +370,43 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
             const fromRow = selectedSquare.row;
             const fromCol = selectedSquare.col;
 
-            setBoard(newBoard);
-            setSelectedSquare(null);
-            setValidMoves([]);
+            const prevBoard = board.map(r => r.slice());
+            // Do not apply optimistic board update. Mark move as pending and send to server.
+            setPendingMove(true);
 
             // Send move to backend to keep server-side board in sync and update client from server
+            // Do not preflight with getBoard() here to avoid race with SignalR broadcasts.
             (async () => {
                 try {
-                    const res = await makeMove({ FromRow: fromRow, FromCol: fromCol, ToRow: row, ToCol: col });
-                    // backend returns serializable board (Squares jagged array)
-                    const dto = res?.Squares ?? res?.squares ?? (Array.isArray(res) ? res : null);
-                    if (dto && Array.isArray(dto) && dto.length === 8) {
-                        const typeMap = { King: 'K', Queen: 'Q', Rook: 'R', Bishop: 'B', Knight: 'N', Pawn: 'P' };
-                        const colorMap = { White: 'w', Black: 'b' };
-                        const mapped = dto.map(rowArr => rowArr.map(cell => {
-                            if (!cell) return null;
-                            const t = cell.type ?? cell.Type ?? '';
-                            const c = cell.color ?? cell.Color ?? '';
-                            const moved = cell.hasMoved ?? cell.HasMoved ?? false;
-                            const typeLetter = typeof t === 'string' ? (t.length === 1 ? t.toUpperCase() : (typeMap[t] || null)) : (t != null ? String(t) : null);
-                            const colorLetter = typeof c === 'string' ? (c.length === 1 ? c.toLowerCase() : (colorMap[c] || null)) : (c === 0 ? 'w' : 'b');
-                            if (!typeLetter || !colorLetter) return null;
-                            return { type: typeLetter, color: colorLetter, hasMoved: !!moved };
-                        }));
-                        setBoard(mapped);
+                    const apiRes = await makeMove({ FromRow: fromRow, FromCol: fromCol, ToRow: row, ToCol: col });
+                    try {
+                        if (!apiRes) {
+                            showTemporaryMessage('No response from server');
+                            return;
+                        }
+                        // makeMove returns { ok, status, body }
+                        const body = apiRes.body ?? apiRes;
+                        if (!apiRes.ok) {
+                            const errMsg = body?.error ?? `Move rejected (${apiRes.status})`;
+                            showTemporaryMessage(errMsg, 4000);
+                            // try resync if server included board state in body
+                            const errBoardArr = body?.Board?.Squares ?? body?.Board?.squares ?? body?.Board ?? body?.Squares ?? body?.squares ?? (Array.isArray(body) ? body : null);
+                            const errMapped = errBoardArr ? mapDtoToBoardLocal(errBoardArr) : null;
+                            if (errMapped) setBoard(errMapped);
+                            return;
+                        }
+
+                        const boardArr = body?.Board?.Squares ?? body?.Board?.squares ?? body?.Board ?? body?.Squares ?? body?.squares ?? (Array.isArray(body) ? body : null);
+                        if (boardArr && Array.isArray(boardArr) && boardArr.length === 8) {
+                            const mapped = mapDtoToBoardLocal(boardArr);
+                            if (mapped) setBoard(mapped);
+                        }
+
+                        const cp = body?.CurrentPlayer ?? body?.currentPlayer ?? null;
+                        if (cp === 'w' || cp === 'b') setCurrentPlayer(cp);
+                    } finally {
+                        // always clear pendingMove after server responded
+                        setPendingMove(false);
                     }
                 } catch (err) {
                     console.error('Failed to send move to server', err);
@@ -403,8 +498,8 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
                 if (!gameOver) setMessage("");
             }
 
-            // Vaihda vuoro (jos peli ei päättynyt)
-            setCurrentPlayer(prev => (prev === "w" ? "b" : "w"));
+            // Do not locally toggle current player here; server is authoritative and will
+            // send the updated current player in the move response or via SignalR.
 
             return;
         }

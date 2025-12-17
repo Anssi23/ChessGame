@@ -1,18 +1,21 @@
 
 import React, { useState, useEffect } from "react";
+import * as signalR from '@microsoft/signalr';
 import ChessBoard from "./components/ChessBoard";
-import initialBoard from "./initialBoard";
+// initialBoard removed to force server authoritative load
 import { saveGame, getSaves, loadGame, getBoard } from './api/gameApi';
 
 
 function App() {
-    const [board, setBoard] = useState(initialBoard);
+    const [board, setBoard] = useState(null);
     const [currentPlayer, setCurrentPlayer] = useState("w");
     const [message, setMessage] = useState("");
     const [saveName, setSaveName] = useState("");
     const [messageType, setMessageType] = useState("info"); // "info" | "error" | "success"]
     const [saves, setSaves] = useState([]);
     const [saveTrigger, setSaveTrigger] = useState(0);
+    const [serverSynced, setServerSynced] = useState(false);
+    const [boardKey, setBoardKey] = useState(0);
 
     const normalizeSave = (s) => ({
         Id: s.Id ?? s.id ?? '',
@@ -50,6 +53,16 @@ function App() {
         }));
     };
 
+    // normalize currentPlayer from various possible response shapes
+    const getCurrentPlayerFrom = (res) => {
+        const v = res?.CurrentPlayer ?? res?.currentPlayer ?? res?.board?.CurrentPlayer ?? res?.board?.currentPlayer ?? res?.board?.currentplayer ?? null;
+        if (!v) return null;
+        const s = String(v).toLowerCase();
+        if (s.startsWith('w')) return 'w';
+        if (s.startsWith('b')) return 'b';
+        return null;
+    };
+
     useEffect(() => {
         (async () => {
             try {
@@ -79,14 +92,153 @@ function App() {
         (async () => {
             try {
                 const res = await getBoard();
-                const dto = res?.Squares ?? res?.squares ?? (Array.isArray(res) ? res : null);
-                const mapped = dto ? mapDtoToBoard(dto) : null;
-                if (mapped) setBoard(mapped);
+                console.log('getBoard response raw:', res);
+                // accept several shapes: { Board: { Squares: [...] } } or { board: { squares: [...] } } or direct array
+                const boardArr = res?.Board?.Squares ?? res?.Board?.squares ?? res?.Board ?? res?.board?.Squares ?? res?.board?.squares ?? res?.board ?? res?.Squares ?? res?.squares ?? (Array.isArray(res) ? res : null);
+                console.log('Computed boardArr for mapping:', boardArr);
+                let mapped = null;
+                try {
+                    mapped = boardArr ? mapDtoToBoard(boardArr) : null;
+                    console.log('Mapped board (primary):', mapped);
+                } catch (e) {
+                    console.error('mapDtoToBoard threw', e);
+                }
+                if (!mapped && res?.board && res.board.squares) {
+                    try {
+                        const tryArr = res.board.squares;
+                        const tryMapped = mapDtoToBoard(tryArr);
+                        console.log('Mapped using res.board.squares fallback:', tryMapped);
+                        if (tryMapped) mapped = tryMapped;
+                    } catch (e) { console.error('fallback mapping threw', e); }
+                }
+                // apply mapped board once and set current player from response
+                if (mapped) {
+                    setBoard(mapped);
+                    console.log('Board set in App');
+                } else {
+                    console.warn('No mapped board found from response', res);
+                }
+                const cp = getCurrentPlayerFrom(res);
+                if (cp) setCurrentPlayer(cp);
+                setServerSynced(true);
             } catch (e) {
                 // ignore
             }
         })();
+
+        // SignalR connection for live updates
+        // Use explicit origin for hub URL so client connects to same server the page was served from.
+        const hubUrl = (window.location && window.location.origin ? window.location.origin : '') + '/chesshub';
+        // Use LongPolling transport to avoid WebSocket/proxy issues during testing
+        const conn = new signalR.HubConnectionBuilder()
+            .withUrl(hubUrl, { transport: signalR.HttpTransportType.LongPolling })
+            .withAutomaticReconnect()
+            .build();
+
+        const findBoardArray = (obj) => {
+            if (!obj) return null;
+            // direct arrays
+            if (Array.isArray(obj) && obj.length === 8) return obj;
+            // common locations
+            if (obj.Board && (Array.isArray(obj.Board) || obj.Board.Squares || obj.Board.squares))
+                return obj.Board.Squares ?? obj.Board.squares ?? obj.Board;
+            if (obj.Squares || obj.squares) return obj.Squares ?? obj.squares;
+            // search one level deep for an array of length 8
+            for (const k of Object.keys(obj)) {
+                const v = obj[k];
+                if (Array.isArray(v) && v.length === 8) return v;
+                if (v && (v.Squares || v.squares)) return v.Squares ?? v.squares;
+            }
+            return null;
+        };
+
+        const handleBoardUpdated = (payload) => {
+            console.log('SignalR BoardUpdated received:', payload);
+            const boardArr = findBoardArray(payload);
+            console.log('Board array extracted from payload:', boardArr);
+            const mapped = boardArr ? mapDtoToBoard(boardArr) : null;
+            console.log('Mapped board from payload:', mapped);
+            if (mapped) {
+                // clone deeply to ensure React state change detection and avoid shared references
+                const cloned = JSON.parse(JSON.stringify(mapped));
+                setBoard(cloned);
+                    // force remount of ChessBoard to avoid any internal-reference issues
+                    setBoardKey(k => k + 1);
+                // normalize current player from payload
+                const cp = getCurrentPlayerFrom(payload) ?? (payload?.CurrentPlayer ?? payload?.currentPlayer ?? null);
+                if (cp === 'w' || cp === 'b') setCurrentPlayer(cp);
+                setMessage('Board updated (live)');
+                setMessageType('success');
+                setSaveTrigger(t => t + 1);
+                setServerSynced(true);
+            } else {
+                console.warn('BoardUpdated payload did not contain valid board array', payload);
+            }
+        };
+
+        conn.on('BoardUpdated', handleBoardUpdated);
+        conn.onreconnecting(err => {
+            console.warn('SignalR reconnecting', err);
+            setMessage('Reconnecting to server...');
+        });
+        conn.onreconnected(async (id) => {
+            console.log('SignalR reconnected, new id:', id);
+            setMessage('Reconnected');
+            setMessageType('info');
+            // after reconnect, resync authoritative board from server
+            try {
+                const srv = await getBoard();
+                const boardArr = srv?.Board?.Squares ?? srv?.Board?.squares ?? srv?.board?.Squares ?? srv?.board?.squares ?? (Array.isArray(srv) ? srv : null);
+                const mappedSrv = boardArr ? mapDtoToBoard(boardArr) : null;
+                if (mappedSrv) {
+                    setBoard(mappedSrv);
+                    setBoardKey(k => k + 1);
+                    const cp = srv?.CurrentPlayer ?? srv?.currentPlayer ?? null;
+                    if (cp === 'w' || cp === 'b') setCurrentPlayer(cp);
+                    setServerSynced(true);
+                }
+            } catch (e) {
+                console.warn('Failed to resync after reconnect', e);
+            }
+        });
+        conn.onclose(err => console.warn('SignalR connection closed', err));
+
+        const startWithFallback = async (connection) => {
+            try {
+                await connection.start();
+                console.log('SignalR connected using transport', connection.connectionState);
+                return connection;
+            } catch (err) {
+                console.error('SignalR start failed (websocket), falling back to LongPolling', err);
+                try {
+                    const lp = new signalR.HubConnectionBuilder()
+                        .withUrl('/chesshub', { transport: signalR.HttpTransportType.LongPolling })
+                        .withAutomaticReconnect()
+                        .build();
+                    lp.on('BoardUpdated', handleBoardUpdated);
+                    await lp.start();
+                    console.log('SignalR connected using LongPolling');
+                    return lp;
+                } catch (err2) {
+                    console.error('SignalR fallback start failed', err2);
+                    return null;
+                }
+            }
+        };
+
+        let activeConn = null;
+        (async () => { activeConn = await startWithFallback(conn); })();
+
+        return () => {
+            if (activeConn) activeConn.stop().catch(() => { });
+            conn.off('BoardUpdated', handleBoardUpdated);
+        };
     }, []);
+
+    // expose serverSynced flag on window for ChessBoard to read (simple mechanism)
+    useEffect(() => {
+        try { window.__serverSynced = serverSynced; } catch { }
+    }, [serverSynced]);
 
     return (
         <div style={{ padding: "20px", fontFamily: "Arial" }}>
@@ -128,6 +280,7 @@ function App() {
                     setCurrentPlayer={setCurrentPlayer}
                     setMessage={setMessage}
                     clearSelectionTrigger={saveTrigger}
+                    key={boardKey}
                 />
 
                 <div style={{ width: 320 }}>

@@ -21,16 +21,21 @@ namespace ChessGame.Controllers
         public IActionResult MakeMove([FromBody] MoveRequest move)
         {
             if (_gameService.TryMove(move, out string error))
-                return Ok(_gameService.GetSerializableBoard());
+            {
+                return Ok(new { Board = _gameService.GetSerializableBoard(), CurrentPlayer = _gameService.GetCurrentPlayer() });
+            }
 
-            return BadRequest(new { error });
+            // include server board so client can resync when move is rejected
+            var board = _gameService.GetSerializableBoard();
+            var cp = _gameService.GetCurrentPlayer();
+            return BadRequest(new { error, Board = board, CurrentPlayer = cp });
 
         }
 
         [HttpGet("board")]
         public IActionResult GetBoard()
         {
-            return Ok(_gameService.GetSerializableBoard());
+            return Ok(new { Board = _gameService.GetSerializableBoard(), CurrentPlayer = _gameService.GetCurrentPlayer() });
         }
         
         [HttpPost("save")]
@@ -53,7 +58,7 @@ namespace ChessGame.Controllers
         public IActionResult LoadGame(string id)
         {
             if (_gameService.LoadGame(id))
-                return Ok(_gameService.GetSerializableBoard());
+                return Ok(new { Board = _gameService.GetSerializableBoard(), CurrentPlayer = _gameService.GetCurrentPlayer() });
             return NotFound();
         }
 

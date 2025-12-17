@@ -4,11 +4,13 @@ export async function getBoard() {
 }
 
 export async function makeMove(move) {
-    await fetch("/api/chess/move", {
+    const res = await fetch("/api/chess/move", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(move)
     });
+    const json = await res.json().catch(() => null);
+    return { ok: res.ok, status: res.status, body: json };
 }
 
 export async function saveGame(name) {

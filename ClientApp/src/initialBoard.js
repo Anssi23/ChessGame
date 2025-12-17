@@ -12,7 +12,7 @@ const initialBoard = [
     ],
 
     // rivi 1 mustat sotilaat
-    new Array(8).fill({ type: "P", color: "b" }),
+    Array.from({ length: 8 }, () => ({ type: "P", color: "b" })),
 
     // rivit 2–5 tyhjät
     new Array(8).fill(null),
@@ -21,7 +21,7 @@ const initialBoard = [
     new Array(8).fill(null),
 
     // rivi 6 valkoiset sotilaat
-    new Array(8).fill({ type: "P", color: "w" }),
+    Array.from({ length: 8 }, () => ({ type: "P", color: "w" })),
 
     // rivi 7 (valkoinen kuningas ym.)
     [

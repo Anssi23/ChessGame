@@ -11,7 +11,10 @@ builder.Services.AddControllersWithViews();
 builder.Services.AddDbContext<ChessContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));//lisätty 13.11.2025 AAi
 
-builder.Services.AddSingleton<GameService>();//lisätty 13.11.2025 AAi
+// SignalR for real-time updates
+builder.Services.AddSignalR();
+// Register GameService with hub context injected to ensure broadcasts work
+builder.Services.AddSingleton<GameService>(sp => new GameService(sp.GetRequiredService<Microsoft.AspNetCore.SignalR.IHubContext<ChessGame.Hubs.ChessHub>>()));
 
 // Ensure console logging is enabled so server logs appear in the terminal
 builder.Logging.ClearProviders();
@@ -30,6 +33,7 @@ app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseRouting();
 
+app.MapHub<ChessGame.Hubs.ChessHub>("/chesshub");
 
 app.MapControllerRoute(
     name: "default",

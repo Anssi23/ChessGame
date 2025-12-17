@@ -4,16 +4,22 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Collections.Generic;
+using ChessGame.Hubs;
+using Microsoft.AspNetCore.SignalR;
 
 namespace ChessGame.Services
 {
     public class GameService
     {
         private Board _board;
+        private readonly IHubContext<ChessHub> _hubContext;
+        private string _currentPlayer = "w";
+        private readonly object _lock = new object();
         private readonly string _saveDir = Path.Combine(Directory.GetCurrentDirectory(), "saves");
 
-        public GameService()
+        public GameService(IHubContext<ChessHub> hubContext)
         {
+            _hubContext = hubContext;
             _board = Board.CreateInitialBoard();
             //_board = InitializeBoard();
             // Try to load latest save on startup
@@ -34,6 +40,8 @@ namespace ChessGame.Services
         }
 
         public Board GetBoard() => _board;
+
+        public string GetCurrentPlayer() => _currentPlayer;
 
         // Return a JSON-serializable representation of the board (jagged array)
         public object GetSerializableBoard() => BoardToSerializable(_board);
@@ -68,6 +76,16 @@ namespace ChessGame.Services
 
             var json = JsonSerializer.Serialize(wrapper);
             File.WriteAllText(path, json);
+
+            // Broadcast board update to connected SignalR clients (best-effort)
+            try
+            {
+                Console.WriteLine("GameService: broadcasting BoardUpdated (save)");
+                var payload = new { Board = dto, Squares = dto.Squares, CurrentPlayer = _currentPlayer };
+                _hubContext?.Clients.All.SendAsync("BoardUpdated", payload);
+            }
+            catch (Exception ex) { Console.WriteLine("SignalR broadcast failed: " + ex.Message); }
+
             return id;
         }
 
@@ -148,6 +166,15 @@ namespace ChessGame.Services
 
                 var board = SerializableToBoard(dto);
                 _board = board;
+
+                // Broadcast updated board to clients (load resets current player to white)
+                try {
+                    Console.WriteLine("GameService: broadcasting BoardUpdated (load)");
+                    _currentPlayer = "w";
+                    var payload = new { Board = dto, CurrentPlayer = _currentPlayer };
+                    _hubContext?.Clients.All.SendAsync("BoardUpdated", payload);
+                } catch (Exception ex) { Console.WriteLine("SignalR broadcast failed: " + ex.Message); }
+
                 return true;
             }
             catch
@@ -253,11 +280,26 @@ namespace ChessGame.Services
 
         public bool TryMove(MoveRequest request, out string error)
         {
+            lock (_lock)
+            {
+            
             var piece = _board.Squares[request.FromRow, request.FromCol];
 
             if (piece == null)
             {
                 error = "No piece at source square.";
+                Console.WriteLine($"TryMove failed: no piece at {request.FromRow},{request.FromCol}");
+                // broadcast current board so clients can resync
+                try { var dtoErr = BoardToSerializable(_board); _hubContext?.Clients.All.SendAsync("BoardUpdated", new { Board = dtoErr, CurrentPlayer = _currentPlayer }); } catch { }
+                return false;
+            }
+            // Enforce turn: piece color must match current player
+            var pieceColorLetter = piece.Color == PieceColor.White ? "w" : "b";
+            if (pieceColorLetter != _currentPlayer)
+            {
+                error = "Not that player's turn.";
+                Console.WriteLine($"TryMove failed: attempted move by {pieceColorLetter} while current player is {_currentPlayer}");
+                try { var dtoErr = BoardToSerializable(_board); _hubContext?.Clients.All.SendAsync("BoardUpdated", new { Board = dtoErr, CurrentPlayer = _currentPlayer }); } catch { }
                 return false;
             }
         
@@ -276,6 +318,8 @@ namespace ChessGame.Services
             if (!valid)
             {
                 error = "Illegal move.";
+                Console.WriteLine($"TryMove failed: illegal move from {request.FromRow},{request.FromCol} to {request.ToRow},{request.ToCol} by piece {piece.Type} {piece.Color}");
+                try { var dtoErr = BoardToSerializable(_board); _hubContext?.Clients.All.SendAsync("BoardUpdated", new { Board = dtoErr, CurrentPlayer = _currentPlayer }); } catch { }
                 return false;
             }
 
@@ -321,8 +365,36 @@ namespace ChessGame.Services
                 }
             }
 
+            // flip current player
+            _currentPlayer = _currentPlayer == "w" ? "b" : "w";
+
+            // Broadcast updated board to clients with current player
+            try
+            {
+                var dto = BoardToSerializable(_board);
+                var payload = new { Board = dto, Squares = dto.Squares, CurrentPlayer = _currentPlayer };
+                var task = _hubContext?.Clients.All.SendAsync("BoardUpdated", payload);
+                if (task != null)
+                {
+                    task.ContinueWith(t =>
+                    {
+                        if (t.IsFaulted)
+                        {
+                            Console.WriteLine("SignalR broadcast failed: " + t.Exception?.GetBaseException().Message);
+                        }
+                        else
+                        {
+                            Console.WriteLine("SignalR broadcast succeeded (TryMove)");
+                        }
+                    });
+                }
+            }
+            catch (Exception ex) { Console.WriteLine("SignalR broadcast scheduling failed: " + ex.Message); }
+
             error = "";
+            Console.WriteLine($"TryMove success: {request.FromRow},{request.FromCol} -> {request.ToRow},{request.ToCol} by {piece.Type} {piece.Color}");
             return true;
+            }
         }
 
         // T‰st‰ alkaen tehd‰‰n oikeat liikkeiden tarkistukset:
