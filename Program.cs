@@ -8,6 +8,18 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllersWithViews();
 
+// Allow common dev origins (React dev server and Visual Studio SPA HTTPS) to connect to SignalR and API during development
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowReactDev", policy =>
+    {
+        policy.WithOrigins("http://localhost:3000", "http://localhost:44409")
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials();
+    });
+});
+
 builder.Services.AddDbContext<ChessContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));//lisätty 13.11.2025 AAi
 
@@ -32,6 +44,11 @@ if (!app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseRouting();
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseCors("AllowReactDev");
+}
 
 app.MapHub<ChessGame.Hubs.ChessHub>("/chesshub");
 

@@ -1,18 +1,19 @@
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const env = process.env;
 
-// Default to the backend HTTPS URL that the ASP.NET app prints when it starts.
-// You can override by setting ASPNETCORE_HTTPS_PORT or ASPNETCORE_URLS in env.
-const target = env.ASPNETCORE_HTTPS_PORT
-    ? `https://localhost:44409`//${env.ASPNETCORE_HTTPS_PORT}
+// Resolve backend URL: prefer REACT_APP_BACKEND_URL (CRA dev), then
+// ASPNETCORE_URLS (when using dotnet SPA hosting), then fallback.
+const target = env.REACT_APP_BACKEND_URL
+  ? env.REACT_APP_BACKEND_URL
   : env.ASPNETCORE_URLS
     ? env.ASPNETCORE_URLS.split(';')[0]
     : 'http://localhost:5267';
 
-// Proxy any API calls under /api to the backend
+// Proxy only API calls under /api to the backend. DO NOT proxy SignalR hub
+// connections (/chesshub) so the client connects directly to backend negotiate.
 const context = [
-  '/api',
-  '/chesshub'
+  '/api'
+  //'/chesshub'
 ];
 
 const onError = (err, req, resp) => {
@@ -23,11 +24,13 @@ module.exports = function (app) {
   console.log('[setupProxy] using target:', target);
   const appProxy = createProxyMiddleware(context, {
     proxyTimeout: 10000,
-    target: target,
+    target,
     changeOrigin: true,
-    onError: onError,
+    onError,
     secure: false,
-    ws: true,
+    // do not proxy websockets for SignalR; client will connect to hub URL directly
+    ws: false,
+    logLevel: 'debug',
     headers: {
       Connection: 'Keep-Alive'
     }

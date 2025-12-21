@@ -99,6 +99,7 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
     // When parent-provided `board` prop changes (e.g., SignalR update), clear pending move
     // and any transient selection to avoid client-side desync.
     useEffect(() => {
+        console.log('[ChessBoard] parent board prop changed');
         // if a server update arrived, stop blocking interactions and clear selection
         setPendingMove(false);
         setSelectedSquare(null);

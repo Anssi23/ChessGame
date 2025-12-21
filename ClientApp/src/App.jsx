@@ -127,13 +127,23 @@ function App() {
         })();
 
         // SignalR connection for live updates
-        // Use explicit origin for hub URL so client connects to same server the page was served from.
-        const hubUrl = (window.location && window.location.origin ? window.location.origin : '') + '/chesshub';
+        // Connect directly to backend negotiate endpoint. If REACT_APP_BACKEND_URL
+        // is explicitly provided use it (CRA dev server). Otherwise prefer the
+        // page origin when the app is served from the backend (Visual Studio).
+        const pageOrigin = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '';
+        const envBackend = process.env.REACT_APP_BACKEND_URL;
+        const backendBase = envBackend || (pageOrigin && pageOrigin !== 'http://localhost:3000' ? pageOrigin : 'http://localhost:5267');
+        const hubUrl = backendBase.replace(/\/$/, '') + '/chesshub';
+
         // Use LongPolling transport to avoid WebSocket/proxy issues during testing
         const conn = new signalR.HubConnectionBuilder()
             .withUrl(hubUrl, { transport: signalR.HttpTransportType.LongPolling })
+            .configureLogging(signalR.LogLevel.Debug)
             .withAutomaticReconnect()
             .build();
+
+        console.log('SignalR HubConnection built for', hubUrl);
+        console.log('backendBase:', backendBase);
 
         const findBoardArray = (obj) => {
             if (!obj) return null;
@@ -153,11 +163,11 @@ function App() {
         };
 
         const handleBoardUpdated = (payload) => {
-            console.log('SignalR BoardUpdated received:', payload);
+            console.log('[SignalR] BoardUpdated received at', new Date().toISOString(), payload);
             const boardArr = findBoardArray(payload);
-            console.log('Board array extracted from payload:', boardArr);
+            console.log('[SignalR] Board array extracted:', boardArr);
             const mapped = boardArr ? mapDtoToBoard(boardArr) : null;
-            console.log('Mapped board from payload:', mapped);
+            console.log('[SignalR] Mapped board from payload:', mapped);
             if (mapped) {
                 // clone deeply to ensure React state change detection and avoid shared references
                 const cloned = JSON.parse(JSON.stringify(mapped));
@@ -165,7 +175,7 @@ function App() {
                     // force remount of ChessBoard to avoid any internal-reference issues
                     setBoardKey(k => k + 1);
                 // normalize current player from payload
-                const cp = getCurrentPlayerFrom(payload) ?? (payload?.CurrentPlayer ?? payload?.currentPlayer ?? null);
+                const cp = getCurrentPlayerFrom(payload) ?? (payload?.CurrentPlayer ?? null);
                 if (cp === 'w' || cp === 'b') setCurrentPlayer(cp);
                 setMessage('Board updated (live)');
                 setMessageType('success');
@@ -205,22 +215,25 @@ function App() {
 
         const startWithFallback = async (connection) => {
             try {
+                console.log('[SignalR] starting connection...');
                 await connection.start();
-                console.log('SignalR connected using transport', connection.connectionState);
+                console.log('[SignalR] connected using transport', connection.connectionState);
                 return connection;
             } catch (err) {
-                console.error('SignalR start failed (websocket), falling back to LongPolling', err);
+                console.error('[SignalR] start failed, error:', err && err.message ? err.message : err);
                 try {
                     const lp = new signalR.HubConnectionBuilder()
-                        .withUrl('/chesshub', { transport: signalR.HttpTransportType.LongPolling })
+                        .withUrl(hubUrl, { transport: signalR.HttpTransportType.LongPolling })
+                        .configureLogging(signalR.LogLevel.Debug)
                         .withAutomaticReconnect()
                         .build();
                     lp.on('BoardUpdated', handleBoardUpdated);
+                    console.log('[SignalR] starting LongPolling fallback...');
                     await lp.start();
-                    console.log('SignalR connected using LongPolling');
+                    console.log('[SignalR] connected using LongPolling');
                     return lp;
                 } catch (err2) {
-                    console.error('SignalR fallback start failed', err2);
+                    console.error('[SignalR] fallback start failed', err2 && err2.message ? err2.message : err2);
                     return null;
                 }
             }
