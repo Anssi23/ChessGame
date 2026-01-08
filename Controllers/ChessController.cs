@@ -58,7 +58,7 @@ namespace ChessGame.Controllers
         public IActionResult LoadGame(string id)
         {
             if (_gameService.LoadGame(id))
-                return Ok(new { Board = _gameService.GetSerializableBoard(), CurrentPlayer = _gameService.GetCurrentPlayer() });
+                return Ok(new { Board = _gameService.GetSerializableBoard(), CurrentPlayer = _gameService.GetCurrentPlayer(), Captured = _gameService.GetCaptured() });
             return NotFound();
         }
 

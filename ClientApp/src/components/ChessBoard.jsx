@@ -3,6 +3,7 @@ import React, { useState, useRef, useEffect } from "react";
 import Piece from "./Piece";
 import { pieceImages } from './Piece';
 import { makeMove, getBoard } from '../api/gameApi';
+import initialBoard from '../initialBoard';
 
 // Local mapper (same logic as App.jsx) to convert server DTO -> frontend board
 function mapDtoToBoardLocal(dto) {
@@ -55,17 +56,22 @@ function getFlyingSrc(piece) {
  *  - board: 8x8 array (board[row][col]) where each square is either null or { type: "P"/"K"/..., color: "w"/"b" }
  *  - setBoard: function to update the board state (provided by App.jsx)
  */
-export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentPlayer, message, setMessage, clearSelectionTrigger }) {
+export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentPlayer, message, setMessage, clearSelectionTrigger, captured, setCaptured, addCaptured }) {
     const [selectedSquare, setSelectedSquare] = useState(null);        // { r, c } or null
     const [validMoves, setValidMoves] = useState([]);      // array of { r, c }    
     const [checkStatus, setCheckStatus] = useState({ w: false, b: false });
     const [gameOver, setGameOver] = useState(false);
     const [pendingMove, setPendingMove] = useState(false);
     const messageTimeoutRef = useRef(null);
-    const [captured, setCaptured] = useState({ w: [], b: [] });
     const [flying, setFlying] = useState([]); // { id, piece, left, top, tx, ty, size }
     const capturedRef = useRef(null);
     const rafRef = useRef(null);
+    const prevBoardRef = useRef(null);
+    const lastBoardRef = useRef(null);
+    // previous-is-initial ref not needed when captured is managed by App
+
+    // Captured state and persistence handled by parent App; ChessBoard uses
+    // `captured`, `setCaptured` and `addCaptured` props.
 
     // If parent did not provide board (null), try to load directly from server as fallback
     useEffect(() => {
@@ -100,17 +106,146 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
     // and any transient selection to avoid client-side desync.
     useEffect(() => {
         console.log('[ChessBoard] parent board prop changed');
+        console.log('[ChessBoard] captured before board change', captured);
         // if a server update arrived, stop blocking interactions and clear selection
         setPendingMove(false);
         setSelectedSquare(null);
         setValidMoves([]);
+
+        // Compute captured pieces by comparing previous board snapshot to the
+        // new authoritative board. We only do this when there are no flying
+        // animations in progress to avoid double-adding captured pieces that
+        // were already appended by the animation completion handler.
+        try {
+        console.log('[ChessBoard] prevBoardRef present:', !!prevBoardRef.current, 'lastBoardPresent:', !!lastBoardRef.current, 'flying length:', (flying || []).length);
+            const prev = lastBoardRef.current || prevBoardRef.current;
+            if (prev && (!flying || flying.length === 0)) {
+                const next = board;
+                const prevCounts = {};
+                const nextCounts = {};
+                for (let r = 0; r < 8; r++) {
+                    for (let c = 0; c < 8; c++) {
+                        const p = prev[r] && prev[r][c];
+                        if (p) {
+                            const k = `${p.type}_${p.color}`;
+                            prevCounts[k] = (prevCounts[k] || 0) + 1;
+                        }
+                        const q = next[r] && next[r][c];
+                        if (q) {
+                            const k2 = `${q.type}_${q.color}`;
+                            nextCounts[k2] = (nextCounts[k2] || 0) + 1;
+                        }
+                    }
+                }
+                // For any piece-type/color where prev > next, add the diff to captured
+                const toAdd = { w: [], b: [] };
+                for (const k of Object.keys(prevCounts)) {
+                    const prevN = prevCounts[k] || 0;
+                    const nextN = nextCounts[k] || 0;
+                    const diff = prevN - nextN;
+                    if (diff > 0) {
+                        const [type, color] = k.split('_');
+                        for (let i = 0; i < diff; i++) {
+                            toAdd[color] = toAdd[color] || [];
+                            toAdd[color].push({ type, color });
+                        }
+                    }
+                }
+
+                console.log('[ChessBoard] captured diff toAdd:', toAdd, 'prevCounts:', prevCounts, 'nextCounts:', nextCounts);
+
+                if ((toAdd.w && toAdd.w.length) || (toAdd.b && toAdd.b.length)) {
+                    // use addCaptured so items have ids and persistence works
+                    for (const col of ['w','b']) {
+                        const list = toAdd[col] || [];
+                        for (const p of list) addCaptured(p);
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to compute captured diff', e);
+        }
+
+        // do not overwrite prevBoardRef here; lastBoardRef is updated in a
+        // separate effect (below) after this effect runs so it holds the prior
+        // board for the next change.
+    }, [board]);
+
+    // Debug: log when captured prop changes so we can trace why UI not updating
+    useEffect(() => {
+        try {
+            console.log('[ChessBoard] captured prop changed', captured);
+        } catch (e) { /* ignore */ }
+    }, [captured]);
+
+    // After processing the board change, record the current board into
+    // lastBoardRef so that the next time `board` changes we can diff against
+    // this snapshot.
+    useEffect(() => {
+        try {
+            lastBoardRef.current = board ? board.map(r => r.map(c => c ? { ...c } : null)) : null;
+        } catch {
+            lastBoardRef.current = board;
+        }
     }, [board]);
 
     // Clear transient animations/captured UI when authoritative board arrives
     useEffect(() => {
-        // remove any flying animations and reset captured lists to match server
+        // remove any flying animations; do not clear `captured` here
         setFlying([]);
-        setCaptured({ w: [], b: [] });
+        // nothing else to do here
+        // Do NOT clear `captured` here — keep captured pieces visible even after
+        // an authoritative server board update. Clearing captured here caused
+        // captured pieces to disappear when the server echoed the new board.
+    }, [board]);
+
+    // Seed prevBoardRef when we first receive a server board so diffs work.
+    useEffect(() => {
+        if (!prevBoardRef.current && board && Array.isArray(board)) {
+            try {
+                prevBoardRef.current = board.map(r => r.map(c => c ? { ...c } : null));
+                console.log('[ChessBoard] seeded prevBoardRef on initial board');
+            } catch (e) {
+                prevBoardRef.current = board;
+            }
+        }
+    }, [board]);
+
+    // Update checkStatus whenever authoritative board changes. Use a
+    // silent checker that does not trigger UI messages (those are handled
+    // elsewhere) so the king-square highlight stays visible while check
+    // condition persists.
+    const isKingInCheckSilent = (bd, color) => {
+        let kingPos = null;
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const piece = bd[r][c];
+                if (piece && (piece.type === 'K' || piece.type === 'k') && piece.color === color) {
+                    kingPos = { r, c };
+                    break;
+                }
+            }
+            if (kingPos) break;
+        }
+        if (!kingPos) return false;
+        for (let r = 0; r < 8; r++) {
+            for (let c = 0; c < 8; c++) {
+                const piece = bd[r][c];
+                if (piece && piece.color !== color) {
+                    const moves = getValidMoves(bd, r, c);
+                    if (moves.some(m => m.r === kingPos.r && m.c === kingPos.c)) return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    useEffect(() => {
+        try {
+            const w = isKingInCheckSilent(board, 'w');
+            const b = isKingInCheckSilent(board, 'b');
+            setCheckStatus({ w, b });
+        } catch (e) { /* ignore */ }
     }, [board]);
 
     // Animation step using sine-wave path. Runs via requestAnimationFrame while there are flying items.
@@ -371,8 +506,13 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
             const fromRow = selectedSquare.row;
             const fromCol = selectedSquare.col;
 
-            const prevBoard = board.map(r => r.slice());
+            //const prevBoard = board.map(r => r.slice());
             // Do not apply optimistic board update. Mark move as pending and send to server.
+            // Seed prevBoardRef with the current client board snapshot so subsequent
+            // server responses / SignalR updates can be diffed against it.
+            try {
+                prevBoardRef.current = board ? board.map(r => r.map(c => c ? { ...c } : null)) : null;
+            } catch { prevBoardRef.current = board; }
             setPendingMove(true);
 
             // Send move to backend to keep server-side board in sync and update client from server
@@ -400,7 +540,46 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
                         const boardArr = body?.Board?.Squares ?? body?.Board?.squares ?? body?.Board ?? body?.Squares ?? body?.squares ?? (Array.isArray(body) ? body : null);
                         if (boardArr && Array.isArray(boardArr) && boardArr.length === 8) {
                             const mapped = mapDtoToBoardLocal(boardArr);
-                            if (mapped) setBoard(mapped);
+                            if (mapped) {
+                                // Compute captured diff between current client board and server board
+                                try {
+                                    const prev = board;
+                                    const next = mapped;
+                                    const prevCounts = {};
+                                    const nextCounts = {};
+                                    for (let rr = 0; rr < 8; rr++) {
+                                        for (let cc = 0; cc < 8; cc++) {
+                                            const p = prev[rr] && prev[rr][cc];
+                                            if (p) {
+                                                const k = `${p.type}_${p.color}`;
+                                                prevCounts[k] = (prevCounts[k] || 0) + 1;
+                                            }
+                                            const q = next[rr] && next[rr][cc];
+                                            if (q) {
+                                                const k2 = `${q.type}_${q.color}`;
+                                                nextCounts[k2] = (nextCounts[k2] || 0) + 1;
+                                            }
+                                        }
+                                    }
+                                    const toAdd = { w: [], b: [] };
+                                    for (const k of Object.keys(prevCounts)) {
+                                        const prevN = prevCounts[k] || 0;
+                                        const nextN = nextCounts[k] || 0;
+                                        const diff = prevN - nextN;
+                                        if (diff > 0) {
+                                            const [type, color] = k.split('_');
+                                            for (let i = 0; i < diff; i++) toAdd[color] = [...(toAdd[color] || []), { type, color }];
+                                        }
+                                    }
+                                    if ((toAdd.w && toAdd.w.length) || (toAdd.b && toAdd.b.length)) {
+                                        setCaptured(prevC => ({ w: [...prevC.w, ...(toAdd.w || [])], b: [...prevC.b, ...(toAdd.b || [])] }));
+                                    }
+                                } catch (e) {
+                                    console.warn('capture diff calc failed', e);
+                                }
+
+                                setBoard(mapped);
+                            }
                         }
 
                         const cp = body?.CurrentPlayer ?? body?.currentPlayer ?? null;
@@ -417,6 +596,15 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
 
             // If there was a captured piece, start flying animation then add to captured
             if (targetPiece) {
+                // Immediately record the captured piece so it appears in the UI even
+                // if animations or remounts interfere. The flying animation will
+                // still run but we avoid relying on it to append the captured
+                // piece (prevents lost captured items when component remounts).
+                try {
+                    addCaptured(targetPiece);
+                } catch (e) {
+                    // ignore
+                }
                 try {
                     // source element
                     const cellEl = document.querySelector(`[data-square="${row}-${col}"]`);
@@ -462,8 +650,8 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
                         rafRef.current = requestAnimationFrame(stepFlying);
                     }
                 } catch (e) {
-                    // fallback: if anything fails, just add to captured
-                    setCaptured(prev => ({ ...prev, [targetPiece.color]: [...prev[targetPiece.color], targetPiece] }));
+                    // fallback: nothing extra to do because we already appended the
+                    // captured piece above. Keep silent.
                 }
             }
 

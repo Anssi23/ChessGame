@@ -16,6 +16,106 @@ function App() {
     const [saveTrigger, setSaveTrigger] = useState(0);
     const [serverSynced, setServerSynced] = useState(false);
     const [boardKey, setBoardKey] = useState(0);
+    const [captured, setCaptured] = useState({ w: [], b: [] });
+
+    const addCaptured = (piece) => {
+        if (!piece || !piece.color) return;
+        const item = { type: piece.type, color: piece.color, id: Date.now() + Math.random() };
+        setCaptured(prev => ({ ...prev, [piece.color]: [...(prev[piece.color] || []), item] }));
+    };
+
+    // helper to normalize captured entries from server into { type: 'P', color: 'w' }
+    const normalizeCapturedList = (list) => {
+        if (!Array.isArray(list)) return [];
+        const typeNameToLetter = { King: 'K', Queen: 'Q', Rook: 'R', Bishop: 'B', Knight: 'N', Pawn: 'P' };
+        const colorNameToLetter = { White: 'w', Black: 'b' };
+        const out = [];
+        for (const p of list) {
+            if (!p) continue;
+            const t = p.type ?? p.Type ?? '';
+            const c = p.color ?? p.Color ?? '';
+            let typeLetter = null;
+            if (typeof t === 'string') {
+                if (t.length === 1) typeLetter = t.toUpperCase(); else typeLetter = typeNameToLetter[t] ?? null;
+            } else if (typeof t === 'number') {
+                const numMap = { 0: 'K', 1: 'Q', 2: 'R', 3: 'B', 4: 'N', 5: 'P' };
+                typeLetter = numMap[t];
+            }
+            let colorLetter = null;
+            if (typeof c === 'string') {
+                if (c.length === 1) colorLetter = c.toLowerCase(); else colorLetter = colorNameToLetter[c] ?? null;
+            } else if (typeof c === 'number') {
+                colorLetter = c === 0 ? 'w' : 'b';
+            }
+            if (!typeLetter || !colorLetter) continue;
+            out.push({ type: typeLetter, color: colorLetter, id: Date.now() + Math.random() });
+        }
+        return out;
+    };
+
+    // Persist captured to localStorage so other tabs/windows receive updates
+    useEffect(() => {
+        try {
+            localStorage.setItem('chess_captured', JSON.stringify(captured || { w: [], b: [] }));
+            // keep debug log for diagnostics
+            console.debug('[App] persisted captured', captured);
+        } catch (e) {
+            // ignore
+        }
+    }, [captured]);
+
+    // Hydrate captured from localStorage on mount and listen for storage events
+    useEffect(() => {
+        try {
+            const raw = localStorage.getItem('chess_captured');
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed === 'object') setCaptured({ w: parsed.w || [], b: parsed.b || [] });
+            }
+        } catch (e) {
+            // ignore
+        }
+
+        const onStorage = (ev) => {
+            if (!ev || !ev.key) return;
+            try {
+                if (ev.key === 'chess_captured') {
+                    const parsed = JSON.parse(ev.newValue || '{}');
+                    if (parsed && typeof parsed === 'object') {
+                        console.debug('[App] storage event received chess_captured', parsed);
+                        setCaptured({ w: parsed.w || [], b: parsed.b || [] });
+                    }
+                    return;
+                }
+                if (ev.key === 'chess_sync') {
+                    const parsed = JSON.parse(ev.newValue || '{}');
+                    if (parsed && typeof parsed === 'object' && parsed.captured) {
+                        console.debug('[App] storage event received chess_sync', parsed);
+                        const cap = parsed.captured;
+                        setCaptured({ w: normalizeCapturedList(cap.w || []), b: normalizeCapturedList(cap.b || []) });
+                    }
+                    return;
+                }
+                if (ev.key === 'chess_saves_sync') {
+                    console.debug('[App] storage event received chess_saves_sync', ev.newValue);
+                    // Refresh saves list in other tabs
+                    (async () => {
+                        try {
+                            const list = await getSaves();
+                            setSaves((list || []).map(normalizeSave));
+                        } catch (e) {
+                            console.warn('Failed to refresh saves from storage event', e);
+                        }
+                    })();
+                    return;
+                }
+            } catch (e) {
+                // ignore
+            }
+        };
+        window.addEventListener('storage', onStorage);
+        return () => window.removeEventListener('storage', onStorage);
+    }, []);
 
     const normalizeSave = (s) => ({
         Id: s.Id ?? s.id ?? '',
@@ -130,10 +230,20 @@ function App() {
         // Connect directly to backend negotiate endpoint. If REACT_APP_BACKEND_URL
         // is explicitly provided use it (CRA dev server). Otherwise prefer the
         // page origin when the app is served from the backend (Visual Studio).
-        const pageOrigin = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : '';
-        const envBackend = process.env.REACT_APP_BACKEND_URL;
+        const pageOrigin = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin.trim() : '';
+
+        const envBackend = (process.env.REACT_APP_BACKEND_URL || '').trim();
+        console.log('[SignalR] REACT_APP_BACKEND_URL:', JSON.stringify(envBackend), 'pageOrigin:', JSON.stringify(pageOrigin)); 
         const backendBase = envBackend || (pageOrigin && pageOrigin !== 'http://localhost:3000' ? pageOrigin : 'http://localhost:5267');
-        const hubUrl = backendBase.replace(/\/$/, '') + '/chesshub';
+        let hubUrl = '';
+        try {
+            // Use the URL constructor to ensure no accidental spaces or malformed concat
+            hubUrl = new URL('/chesshub', backendBase).toString();
+        } catch (e) {
+            hubUrl = backendBase.replace(/\/$/, '') + '/chesshub';
+        }
+
+        console.log('[SignalR] resolved backendBase:', JSON.stringify(backendBase), 'hubUrl:', hubUrl);
 
         // Use LongPolling transport to avoid WebSocket/proxy issues during testing
         const conn = new signalR.HubConnectionBuilder()
@@ -177,6 +287,13 @@ function App() {
                 // normalize current player from payload
                 const cp = getCurrentPlayerFrom(payload) ?? (payload?.CurrentPlayer ?? null);
                 if (cp === 'w' || cp === 'b') setCurrentPlayer(cp);
+                // if payload contains captured info, use it to sync captured list
+                if (payload?.Captured && typeof payload.Captured === 'object') {
+                    try {
+                        const cap = payload.Captured;
+                        setCaptured({ w: normalizeCapturedList(cap.w || []), b: normalizeCapturedList(cap.b || []) });
+                    } catch (e) { /* ignore */ }
+                }
                 setMessage('Board updated (live)');
                 setMessageType('success');
                 setSaveTrigger(t => t + 1);
@@ -294,6 +411,9 @@ function App() {
                     setMessage={setMessage}
                     clearSelectionTrigger={saveTrigger}
                     key={boardKey}
+                    captured={captured}
+                    setCaptured={setCaptured}
+                    addCaptured={addCaptured}
                 />
 
                 <div style={{ width: 320 }}>
@@ -309,6 +429,16 @@ function App() {
                                     setSaves((list || []).map(normalizeSave));
                                     // notify board to clear any selection highlighting
                                     setSaveTrigger(t => t + 1);
+                                // also write a sync marker to localStorage so other tabs update captured
+                                try {
+                                    localStorage.setItem('chess_sync', JSON.stringify({ ts: Date.now(), captured }));
+                                    console.debug('[App] wrote chess_sync after save', captured);
+                                } catch (e) { /* ignore */ }
+                                // also notify other tabs to refresh saved games list
+                                try {
+                                    localStorage.setItem('chess_saves_sync', JSON.stringify({ ts: Date.now(), id: res.id }));
+                                    console.debug('[App] wrote chess_saves_sync after save', res.id);
+                                } catch (e) { /* ignore */ }
                                     } catch (e) {
                                         setMessage('Save failed');
                                         setMessageType('error');
@@ -345,22 +475,46 @@ function App() {
                                         try {
                                             const res = await loadGame(s.Id);
                                             console.log('loadGame response:', res);
-                                            const dto = res?.Board?.Squares ?? res?.Squares ?? res?.squares ?? (Array.isArray(res) ? res : null);
-                                            const mapped = dto ? mapDtoToBoard(dto) : null;
+                                            // apply captured from server regardless of board mapping success
+                                            try {
+                                                const cap = res?.Captured ?? res?.captured;
+                                                console.debug('[App] load returned captured:', cap);
+                                                if (cap && typeof cap === 'object') {
+                                                    setCaptured({ w: normalizeCapturedList(cap.w || []), b: normalizeCapturedList(cap.b || []) });
+                                                }
+                                            } catch (e) { console.warn('Failed to apply captured from load early', e); }
+                                            // robustly find board array inside response
+                                            const findBoardArray = (obj) => {
+                                                if (!obj) return null;
+                                                if (Array.isArray(obj) && obj.length === 8) return obj;
+                                                if (obj.Board) return obj.Board.Squares ?? obj.Board.squares ?? obj.Board;
+                                                if (obj.board) return obj.board.Squares ?? obj.board.squares ?? obj.board;
+                                                if (obj.Squares || obj.squares) return obj.Squares ?? obj.squares;
+                                                for (const k of Object.keys(obj)) {
+                                                    const v = obj[k];
+                                                    if (Array.isArray(v) && v.length === 8) return v;
+                                                    if (v && (v.Squares || v.squares)) return v.Squares ?? v.squares;
+                                                }
+                                                return null;
+                                            };
+
+                                            const boardArr = findBoardArray(res);
+                                            const mapped = boardArr ? mapDtoToBoard(boardArr) : null;
                                             if (mapped) {
+                                                // apply captured from server if present
+                                                try {
+                                                    const cap = res?.Captured ?? res?.captured;
+                                                    if (cap && typeof cap === 'object') {
+                                                        const w = (cap.w || []).map(p => ({ type: p.type, color: p.color, id: Date.now() + Math.random() }));
+                                                        const b = (cap.b || []).map(p => ({ type: p.type, color: p.color, id: Date.now() + Math.random() }));
+                                                        setCaptured({ w, b });
+                                                    }
+                                                } catch (e) { /* ignore */ }
                                                 setBoard(mapped);
                                                 setMessage('Loaded');
                                                 setMessageType('success');
-                                                // clear any selection highlighting in board
-                                                setSaveTrigger(t => t + 1);
-                                            } else if (Array.isArray(dto)) {
-                                                // fallback: maybe backend already returned frontend-shaped board
-                                                setBoard(dto);
-                                                setMessage('Loaded (raw)');
-                                                setMessageType('success');
                                                 setSaveTrigger(t => t + 1);
                                             } else {
-                                                // show debug info if unexpected shape
                                                 setMessage('Loaded data has unexpected shape; see console');
                                                 setMessageType('error');
                                                 console.log('Unexpected load payload:', res);

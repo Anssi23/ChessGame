@@ -21,22 +21,7 @@ namespace ChessGame.Services
         {
             _hubContext = hubContext;
             _board = Board.CreateInitialBoard();
-            //_board = InitializeBoard();
-            // Try to load latest save on startup
-            try
-            {
-                if (Directory.Exists(_saveDir))
-                {
-                    var files = Directory.GetFiles(_saveDir, "*.json");
-                    if (files.Length > 0)
-                    {
-                        var latest = files.OrderByDescending(f => File.GetLastWriteTimeUtc(f)).First();
-                        var id = Path.GetFileNameWithoutExtension(latest);
-                        LoadGame(id);
-                    }
-                }
-            }
-            catch { }
+            // Do not auto-load latest save on startup — start with initial board instead.
         }
 
         public Board GetBoard() => _board;
@@ -45,6 +30,7 @@ namespace ChessGame.Services
 
         // Return a JSON-serializable representation of the board (jagged array)
         public object GetSerializableBoard() => BoardToSerializable(_board);
+        public object GetCaptured() => ComputeCapturedFromBoard(_board);
 
         public string SaveGame(string name)
         {
@@ -65,13 +51,17 @@ namespace ChessGame.Services
             var dto = BoardToSerializable(_board);
 
             // Wrap with metadata (id, name, timestamp) so saved file contains timestamp
+            // Compute captured pieces for inclusion in save metadata
+            var captured = ComputeCapturedFromBoard(_board);
+
             var wrapper = new
             {
                 Id = id,
                 Name = name,
                 TimestampUtc = timestamp.ToString("o"),
                 FileName = fileName,
-                Board = dto
+                Board = dto,
+                Captured = captured
             };
 
             var json = JsonSerializer.Serialize(wrapper);
@@ -81,7 +71,7 @@ namespace ChessGame.Services
             try
             {
                 Console.WriteLine("GameService: broadcasting BoardUpdated (save)");
-                var payload = new { Board = dto, Squares = dto.Squares, CurrentPlayer = _currentPlayer };
+                var payload = new { Board = dto, Squares = dto.Squares, CurrentPlayer = _currentPlayer, Captured = captured };
                 _hubContext?.Clients.All.SendAsync("BoardUpdated", payload);
             }
             catch (Exception ex) { Console.WriteLine("SignalR broadcast failed: " + ex.Message); }
@@ -171,7 +161,9 @@ namespace ChessGame.Services
                 try {
                     Console.WriteLine("GameService: broadcasting BoardUpdated (load)");
                     _currentPlayer = "w";
-                    var payload = new { Board = dto, CurrentPlayer = _currentPlayer };
+                    // include captured computed from loaded board so clients can sync
+                    var capturedFromBoard = ComputeCapturedFromBoard(_board);
+                    var payload = new { Board = dto, CurrentPlayer = _currentPlayer, Captured = capturedFromBoard };
                     _hubContext?.Clients.All.SendAsync("BoardUpdated", payload);
                 } catch (Exception ex) { Console.WriteLine("SignalR broadcast failed: " + ex.Message); }
 
@@ -182,6 +174,72 @@ namespace ChessGame.Services
                 return false;
             }
         }
+
+        // Compute captured pieces by comparing initial board counts to current board
+        private object ComputeCapturedFromBoard(Board b)
+        {
+            var initial = Board.CreateInitialBoard();
+            var initCounts = new Dictionary<string, int>();
+            var currCounts = new Dictionary<string, int>();
+
+            string Key(Piece? p)
+            {
+                if (p == null) return null;
+                var t = p.Type;
+                var c = p.Color == PieceColor.White ? 'w' : 'b';
+                var letter = t switch
+                {
+                    PieceType.King => 'K',
+                    PieceType.Queen => 'Q',
+                    PieceType.Rook => 'R',
+                    PieceType.Bishop => 'B',
+                    PieceType.Knight => 'N',
+                    PieceType.Pawn => 'P',
+                    _ => 'P'
+                };
+                return $"{letter}_{c}";
+            }
+
+            for (int r = 0; r < 8; r++)
+            {
+                for (int c = 0; c < 8; c++)
+                {
+                    var p = initial.Squares[r, c];
+                    var k = Key(p);
+                    if (k != null) initCounts[k] = initCounts.GetValueOrDefault(k) + 1;
+                    var q = b.Squares[r, c];
+                    var k2 = Key(q);
+                    if (k2 != null) currCounts[k2] = currCounts.GetValueOrDefault(k2) + 1;
+                }
+            }
+
+            var resultW = new List<object>();
+            var resultB = new List<object>();
+            foreach (var kv in initCounts)
+            {
+                var key = kv.Key; // like "P_w"
+                var initN = kv.Value;
+                var currN = currCounts.GetValueOrDefault(key);
+                var diff = initN - currN;
+                if (diff > 0)
+                {
+                    var parts = key.Split('_');
+                    var type = parts[0];
+                    var color = parts[1];
+                    for (int i = 0; i < diff; i++)
+                    {
+                        if (color == "w") resultW.Add(new { type, color }); else resultB.Add(new { type, color });
+                    }
+                }
+            }
+
+            return new { w = resultW, b = resultB };
+        }
+        //    catch
+        //    {
+        //        return false;
+        //    }
+        //}
 
         public List<SaveInfo> GetSavedGames()
         {

@@ -8,12 +8,14 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllersWithViews();
 
-// Allow common dev origins (React dev server and Visual Studio SPA HTTPS) to connect to SignalR and API during development
+// Allow React dev server and other local machines to connect to SignalR and API during development.
+// For development only: allow any origin (useful for testing from other devices on the LAN).
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowReactDev", policy =>
     {
-        policy.WithOrigins("http://localhost:3000", "http://localhost:44409")
+        // React dev server        
+        policy.SetIsOriginAllowed(_ => true)
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials();
