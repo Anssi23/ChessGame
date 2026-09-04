@@ -72,7 +72,7 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
                 }
             }
 
-            // add captured pieces accumulated
+            // add captured pieces accumulated to displayed captured list
             const hasAdds = (toAdd.w && toAdd.w.length) || (toAdd.b && toAdd.b.length);
             if (hasAdds) {
                 setCaptured(prevC => ({
@@ -94,6 +94,18 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
             return next;
         });
     };
+
+    // Keep checkStatus in sync with authoritative board state: recompute whenever board changes
+    useEffect(() => {
+        try {
+            setCheckStatus({
+                w: isKingInCheck(board, 'w'),
+                b: isKingInCheck(board, 'b')
+            });
+        } catch (e) {
+            // ignore
+        }
+    }, [board]);
 
     const showTemporaryMessage = (msg, ms = 3000) => {
         if (messageTimeoutRef.current) {
@@ -312,6 +324,9 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
                             return { type: typeLetter, color: colorLetter, hasMoved: !!moved };
                         }));
                         setBoard(mapped);
+                        // update current player from server if present
+                        const serverCurrent = res?.CurrentPlayer ?? res?.currentPlayer ?? null;
+                        if (serverCurrent === 'w' || serverCurrent === 'b') setCurrentPlayer(serverCurrent);
                     }
                 } catch (err) {
                     console.error('Failed to send move to server', err);
@@ -366,8 +381,8 @@ export default function ChessBoard({ board, setBoard, currentPlayer, setCurrentP
                         rafRef.current = requestAnimationFrame(stepFlying);
                     }
                 } catch (e) {
-                    // fallback: if anything fails, just add to captured
-                    setCaptured(prev => ({ ...prev, [targetPiece.color]: [...prev[targetPiece.color], targetPiece] }));
+                    // fallback: if animation setup fails, add to captured immediately so user sees it
+                    setCaptured(prev => ({ ...prev, [targetPiece.color]: [...(prev[targetPiece.color] || []), targetPiece] }));
                 }
             }
 

@@ -10,6 +10,7 @@ namespace ChessGame.Services
     public class GameService
     {
         private Board _board;
+        private string _currentPlayer = "w";
         private readonly string _saveDir = Path.Combine(Directory.GetCurrentDirectory(), "saves");
 
         public GameService()
@@ -36,7 +37,12 @@ namespace ChessGame.Services
         public Board GetBoard() => _board;
 
         // Return a JSON-serializable representation of the board (jagged array)
-        public object GetSerializableBoard() => BoardToSerializable(_board);
+        // Return board DTO along with current player so clients can stay in sync
+        public object GetSerializableBoard()
+        {
+            var dto = BoardToSerializable(_board);
+            return new { Squares = dto.Squares, CurrentPlayer = _currentPlayer };
+        }
 
         public string SaveGame(string name)
         {
@@ -322,6 +328,8 @@ namespace ChessGame.Services
             }
 
             error = "";
+            // Toggle current player after a successful move
+            _currentPlayer = _currentPlayer == "w" ? "b" : "w";
             return true;
         }
 

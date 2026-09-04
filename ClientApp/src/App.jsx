@@ -82,10 +82,42 @@ function App() {
                 const dto = res?.Squares ?? res?.squares ?? (Array.isArray(res) ? res : null);
                 const mapped = dto ? mapDtoToBoard(dto) : null;
                 if (mapped) setBoard(mapped);
+                // update current player if server provided it
+                const cp = res?.CurrentPlayer ?? res?.currentPlayer ?? null;
+                if (cp === 'w' || cp === 'b') setCurrentPlayer(cp);
             } catch (e) {
                 // ignore
             }
         })();
+    }, []);
+
+    // Poll the server periodically to keep multiple clients in sync
+    useEffect(() => {
+        let mounted = true;
+        let last = JSON.stringify(board);
+        const poll = async () => {
+            try {
+                const res = await getBoard();
+                const dto = res?.Squares ?? res?.squares ?? (Array.isArray(res) ? res : null);
+                const mapped = dto ? mapDtoToBoard(dto) : null;
+                if (!mounted) return;
+                if (mapped) {
+                    const s = JSON.stringify(mapped);
+                    if (s !== last) {
+                        setBoard(mapped);
+                        last = s;
+                    }
+                }
+                const cp = res?.CurrentPlayer ?? res?.currentPlayer ?? null;
+                if (cp === 'w' || cp === 'b') setCurrentPlayer(cp);
+            } catch (e) {
+                // ignore transient network errors
+            }
+        };
+
+        const id = setInterval(poll, 1000);
+        return () => { mounted = false; clearInterval(id); };
+    // intentionally include board to initialize last; effect should still run only once
     }, []);
 
     return (

@@ -19,6 +19,16 @@ if (!certificateName) {
 const certFilePath = path.join(baseFolder, `${certificateName}.pem`);
 const keyFilePath = path.join(baseFolder, `${certificateName}.key`);
 
+// Ensure target directory exists before exporting certificate
+if (!fs.existsSync(baseFolder)) {
+  try {
+    fs.mkdirSync(baseFolder, { recursive: true });
+  } catch (err) {
+    console.error('Failed to create certificate directory:', baseFolder, err);
+    process.exit(1);
+  }
+}
+
 if (!fs.existsSync(certFilePath) || !fs.existsSync(keyFilePath)) {
   spawn('dotnet', [
     'dev-certs',
